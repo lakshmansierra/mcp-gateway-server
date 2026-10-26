@@ -1,7 +1,7 @@
 """An MCP client that talks only to the gateway, never to the upstream servers directly.
 
-    python examples/sample_client.py
-    python examples/sample_client.py --url http://127.0.0.1:8080/mcp --key <api key>
+    python examples/client.py
+    python examples/client.py --url http://127.0.0.1:8080/mcp --key <api key>
 
 The key defaults to GATEWAY_API_KEY, falling back to API_KEY_ADMIN from the project's .env.
 """
@@ -35,10 +35,12 @@ async def run(url: str, key: str) -> None:
             print(f"  {tool.name:<28} {tool.description}")
 
         print("\nCalling tools through the gateway:")
-        result = await client.call_tool("sample__add", {"a": 2, "b": 3})
-        print(f"  sample__add(a=2, b=3)          -> {result.content[0].text}")
-        result = await client.call_tool("sample__echo", {"text": "hello gateway"})
-        print(f"  sample__echo('hello gateway')  -> {result.content[0].text}")
+        result = await client.call_tool("server_1__add", {"a": 2, "b": 3})
+        print(f"  server_1__add(a=2, b=3)          -> {result.content[0].text}")
+        result = await client.call_tool("server_2__add", {"a": 10, "b": 20})
+        print(f"  server_2__add(a=10, b=20)        -> {result.content[0].text}")
+        result = await client.call_tool("server_2__echo", {"text": "hello gateway"})
+        print(f"  server_2__echo('hello gateway')  -> {result.content[0].text}")
 
         resources = (await client.list_resources()).resources
         print(f"\nResources ({len(resources)}):")
@@ -50,15 +52,15 @@ async def run(url: str, key: str) -> None:
         print(f"\nResource templates ({len(templates)}):")
         for template in templates:
             print(f"  {template.uri_template}")
-        greeting = await client.read_resource("sample://greeting/Ada")
-        print(f"  sample://greeting/Ada -> {greeting.contents[0].text}")
+        greeting = await client.read_resource("server_2://greeting/Ada")
+        print(f"  server_2://greeting/Ada -> {greeting.contents[0].text}")
 
         prompts = (await client.list_prompts()).prompts
         print(f"\nPrompts ({len(prompts)}):")
         for prompt in prompts:
             print(f"  {prompt.name}")
-        prompt = await client.get_prompt("sample__summarize", {"topic": "MCP gateways"})
-        print(f"  sample__summarize(topic='MCP gateways') -> {prompt.messages[0].content.text}")
+        prompt = await client.get_prompt("server_1__summarize", {"topic": "MCP gateways"})
+        print(f"  server_1__summarize(topic='MCP gateways') -> {prompt.messages[0].content.text}")
 
 
 def main() -> None:

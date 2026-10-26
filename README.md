@@ -19,8 +19,8 @@ through one authenticated URL. Clients don't connect to upstream servers directl
 
 ## Features
 
-- **Aggregation.** Tools and prompts from every upstream appear as `<upstream>__<name>`
-  (for example `github__search_issues`). Resources keep their original URIs, and the
+- **Aggregation.** Tools and prompts from every server appear as `<server>__<name>`
+  (for example `server_1__add`). Resources keep their original URIs, and the
   gateway routes each read to the server that owns the URI.
 - **API-key auth.** Clients send `Authorization: Bearer <key>` or `X-API-Key: <key>`.
   You can limit a key to certain upstreams with glob patterns.
@@ -39,17 +39,17 @@ python -m venv .venv
 .venv/Scripts/activate          # Windows;  source .venv/bin/activate on Linux/macOS
 pip install -r requirements.txt
 
-cp .env.example .env     # then edit upstreams + keys
+cp .env.example .env     # then edit servers + keys
 python main.py           # reads .env; use --env-file <path> for another file
 ```
 
-To try it locally, run the sample upstream and point an upstream at it:
+To try it locally, run the two sample servers (registered as `SERVER_1_URL` / `SERVER_2_URL` in `.env`):
 
 ```bash
-python examples/sample_server_1.py --name math --port 9001
-# in .env:  UPSTREAM_MATH_URL=http://127.0.0.1:9001/mcp
-curl http://localhost:8080/health
-python examples/sample_client.py       # lists and calls the tools through the gateway
+python examples/server_1.py      # port 9001
+python examples/server_2.py      # port 9002
+python main.py                   # gateway on port 8080
+python examples/client.py        # lists and calls the tools through the gateway
 ```
 
 ## Configuration
@@ -67,20 +67,20 @@ variables already set in the real environment take precedence. See
 | variable | meaning |
 |---|---|
 | `API_KEY_<NAME>` | A key clients send as `Authorization: Bearer <key>` |
-| `API_KEY_<NAME>_UPSTREAMS` | Optional comma-separated globs; the key only sees those upstreams |
+| `API_KEY_<NAME>_SERVERS` | Optional comma-separated globs; the key only sees those servers |
 
-**Upstream MCP servers.** `<NAME>` in lowercase becomes the tool prefix, so
-`UPSTREAM_GITHUB_URL` gives tools named `github__...`.
+**MCP servers.** `SERVER_<ID>` in lowercase becomes the server's name and tool prefix, so
+`SERVER_1_URL` gives tools named `server_1__...`.
 
 | variable | default | meaning |
 |---|---|---|
-| `UPSTREAM_<NAME>_URL` | required | The upstream's live MCP URL |
-| `UPSTREAM_<NAME>_TRANSPORT` | `streamable_http` | `streamable_http` or `sse` (legacy servers) |
-| `UPSTREAM_<NAME>_HEADER_<HEADER>` | | Header sent to the upstream; `_` becomes `-` (`X_API_KEY` → `X-API-KEY`) |
-| `UPSTREAM_<NAME>_TIMEOUT` | `60` | Per-request timeout in seconds |
-| `UPSTREAM_<NAME>_ENABLED` | `true` | Set to `false` to turn off without deleting |
-| `UPSTREAM_<NAME>_INCLUDE_TOOLS` | all | Comma-separated globs of tools to expose |
-| `UPSTREAM_<NAME>_EXCLUDE_TOOLS` | none | Comma-separated globs of tools to hide |
+| `SERVER_<ID>_URL` | required | The server's live MCP URL |
+| `SERVER_<ID>_TRANSPORT` | `streamable_http` | `streamable_http` or `sse` (legacy servers) |
+| `SERVER_<ID>_HEADER_<HEADER>` | | Header sent to the server; `_` becomes `-` (`X_API_KEY` → `X-API-KEY`) |
+| `SERVER_<ID>_TIMEOUT` | `60` | Per-request timeout in seconds |
+| `SERVER_<ID>_ENABLED` | `true` | Set to `false` to turn off without deleting |
+| `SERVER_<ID>_INCLUDE_TOOLS` | all | Comma-separated globs of tools to expose |
+| `SERVER_<ID>_EXCLUDE_TOOLS` | none | Comma-separated globs of tools to hide |
 
 ## Connecting AI clients
 
@@ -137,6 +137,7 @@ gateway/
   server.py     MCP handlers: aggregate lists, route calls/reads/prompts
   auth.py       API-key ASGI middleware + per-key upstream scoping
   app.py        Starlette app: /mcp + /health
-examples/sample_server_1.py   a small MCP server for local testing
-examples/sample_client.py     a client that calls the tools through the gateway
+examples/server_1.py   a small MCP server for local testing (port 9001)
+examples/server_2.py   a second copy on port 9002
+examples/client.py     a client that calls the tools through the gateway
 ```

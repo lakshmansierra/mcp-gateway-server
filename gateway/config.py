@@ -1,16 +1,17 @@
 """Gateway configuration, read from environment variables (optionally loaded from a .env file).
 
     GATEWAY_HOST, GATEWAY_PORT, ...           gateway settings
-    API_KEY_<NAME>=<secret>                   a client API key
-    API_KEY_<NAME>_UPSTREAMS=github,docs-*    restrict that key to some upstreams
-    UPSTREAM_<NAME>_URL=https://...           an upstream MCP server
-    UPSTREAM_<NAME>_HEADER_<HEADER>=value     a header sent to it (`_` in <HEADER> becomes `-`)
+    API_KEY_<NAME>=<secret>                     a client API key
+    API_KEY_<NAME>_SERVERS=server_1,server_2    restrict that key to some MCP servers
+    SERVER_<ID>_URL=https://...                 an MCP server behind the gateway
+    SERVER_<ID>_HEADER_<HEADER>=value           a header sent to it (`_` in <HEADER> becomes `-`)
 
-<NAME> is lowercased to form the upstream / key name, e.g. UPSTREAM_GITHUB_URL -> "github".
+SERVER_<ID> lowercased is the server's name and tool prefix, e.g. SERVER_1_URL -> "server_1" -> server_1__add.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from collections.abc import Mapping
@@ -19,11 +20,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+logger = logging.getLogger(__name__)
+
 NAME_SEPARATOR = "__"
 
-UPSTREAM_PREFIX = "UPSTREAM_"
+SERVER_PREFIX = "SERVER_"
 API_KEY_PREFIX = "API_KEY_"
-# Per-upstream setting suffixes -> UpstreamConfig field. Longest first so _INCLUDE_TOOLS wins over shorter matches.
+# Per-server setting suffixes -> UpstreamConfig field. Longest first so _INCLUDE_TOOLS wins over shorter matches.
 UPSTREAM_FIELDS = {
     "_INCLUDE_TOOLS": "include_tools",
     "_EXCLUDE_TOOLS": "exclude_tools",
@@ -33,7 +36,7 @@ UPSTREAM_FIELDS = {
     "_URL": "url",
 }
 HEADER_MARKER = "_HEADER_"
-LIST_FIELDS = {"include_tools", "exclude_tools", "upstreams", "allowed_hosts"}
+LIST_FIELDS = {"include_tools", "exclude_tools", "allowed_hosts"}
 GATEWAY_FIELDS = {
     "GATEWAY_NAME": "name",
     "GATEWAY_HOST": "host",
@@ -128,26 +131,26 @@ class GatewayConfig(BaseModel):
 def _parse_upstreams(env: Mapping[str, str]) -> list[dict[str, Any]]:
     upstreams: dict[str, dict[str, Any]] = {}
     for var, value in env.items():
-        if not var.startswith(UPSTREAM_PREFIX):
+        if not var.startswith(SERVER_PREFIX):
             continue
-        rest = var[len(UPSTREAM_PREFIX) :]
-        if HEADER_MARKER in rest:
-            name, header = rest.split(HEADER_MARKER, 1)
-            entry = upstreams.setdefault(name.lower(), {"name": name.lower()})
+        if HEADER_MARKER in var:
+            server, header = var.split(HEADER_MARKER, 1)
+            entry = upstreams.setdefault(server.lower(), {"name": server.lower()})
             entry.setdefault("headers", {})[header.replace("_", "-")] = value
             continue
         for suffix, field_name in UPSTREAM_FIELDS.items():
-            if rest.endswith(suffix) and len(rest) > len(suffix):
-                name = rest[: -len(suffix)].lower()
+            if var.endswith(suffix) and len(var) > len(SERVER_PREFIX) + len(suffix):
+                name = var[: -len(suffix)].lower()
                 entry = upstreams.setdefault(name, {"name": name})
                 entry[field_name] = _split_list(value) if field_name in LIST_FIELDS else value
                 break
         else:
-            raise ValueError(f"Unrecognised setting '{var}' (expected UPSTREAM_<NAME>_URL, _TRANSPORT, _HEADER_<X>, ...)")
+            # Other software may set SERVER_* variables (e.g. SERVER_NAME), so skip rather than fail.
+            logger.warning("Ignoring '%s': expected SERVER_<ID>_URL, _TRANSPORT, _HEADER_<X>, ...", var)
 
     missing = sorted(name for name, entry in upstreams.items() if "url" not in entry)
     if missing:
-        raise ValueError(f"Upstream(s) {missing} have settings but no UPSTREAM_<NAME>_URL")
+        raise ValueError(f"Server(s) {missing} have settings but no SERVER_<ID>_URL")
     return sorted(upstreams.values(), key=lambda u: u["name"])
 
 
@@ -157,15 +160,15 @@ def _parse_api_keys(env: Mapping[str, str]) -> list[dict[str, Any]]:
         if not var.startswith(API_KEY_PREFIX):
             continue
         rest = var[len(API_KEY_PREFIX) :]
-        if rest.endswith("_UPSTREAMS"):
-            name = rest[: -len("_UPSTREAMS")].lower()
+        if rest.endswith("_SERVERS"):
+            name = rest[: -len("_SERVERS")].lower()
             keys.setdefault(name, {"name": name})["upstreams"] = _split_list(value)
         else:
             keys.setdefault(rest.lower(), {"name": rest.lower()})["key"] = value
 
     missing = sorted(name for name, entry in keys.items() if not entry.get("key"))
     if missing:
-        raise ValueError(f"API key(s) {missing} have _UPSTREAMS set but no API_KEY_<NAME> secret")
+        raise ValueError(f"API key(s) {missing} have _SERVERS set but no API_KEY_<NAME> secret")
     return sorted(keys.values(), key=lambda k: k["name"])
 
 
