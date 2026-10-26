@@ -1,12 +1,4 @@
-"""A tiny MCP server to try the gateway against locally.
-
-    python examples/sample_server_1.py --name math --port 9001
-"""
-
-from __future__ import annotations
-
 import argparse
-
 from mcp.server.mcpserver import MCPServer
 
 
@@ -50,7 +42,7 @@ if __name__ == "__main__":
     import uvicorn
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--name", default="sample")
+    parser.add_argument("--name", default="server_1")
     parser.add_argument("--port", type=int, default=9001)
     args = parser.parse_args()
     uvicorn.run(build(args.name).streamable_http_app(), host="127.0.0.1", port=args.port)
