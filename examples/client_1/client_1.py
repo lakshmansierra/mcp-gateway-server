@@ -1,7 +1,7 @@
 """An MCP client that talks only to the gateway, never to the upstream servers directly.
 
-    python examples/client.py
-    python examples/client.py --url http://127.0.0.1:8080/mcp --key <api key>
+    python examples/client_1/client_1.py
+    python examples/client_1/client_1.py --url http://127.0.0.1:8080/mcp --key <api key>
 
 The key defaults to GATEWAY_API_KEY, falling back to API_KEY_ADMIN from the project's .env.
 """
@@ -64,7 +64,7 @@ async def run(url: str, key: str) -> None:
 
 
 def main() -> None:
-    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+    load_dotenv(_find_env_file())
     parser = argparse.ArgumentParser(description="Call MCP tools through the gateway")
     parser.add_argument("--url", default=os.environ.get("GATEWAY_URL", "http://127.0.0.1:8080/mcp"))
     parser.add_argument("--key", default=os.environ.get("GATEWAY_API_KEY") or os.environ.get("API_KEY_ADMIN"))
@@ -75,6 +75,14 @@ def main() -> None:
         anyio.run(run, args.url, args.key)
     except Exception as exc:  # noqa: BLE001 - connection errors arrive wrapped in ExceptionGroups
         sys.exit(f"Gateway request failed ({_root_cause(exc)}). Is the gateway running at {args.url}, and is the API key valid?")
+
+
+def _find_env_file() -> Path | None:
+    """The nearest .env in this file's folder or any folder above it (the project root's .env)."""
+    for folder in Path(__file__).resolve().parents:
+        if (folder / ".env").is_file():
+            return folder / ".env"
+    return None
 
 
 def _root_cause(exc: BaseException) -> str:
