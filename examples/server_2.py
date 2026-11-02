@@ -7,9 +7,19 @@ def build(name: str) -> MCPServer:
 
     @mcp.tool()
     def add(a: int, b: int) -> int:
-        """Add two integers."""
+        """Add two numbers"""
         return a + b
 
+    @mcp.tool()
+    def subtract(a: int, b: int) -> int:
+        """Subtract b from a"""
+        return a - b
+
+    @mcp.tool()
+    def multiply(a: int, b: int) -> int:
+        """Multiply two numbers"""
+        return a * b
+    
     @mcp.tool()
     def echo(text: str) -> str:
         """Echo text back, tagged with this server's name."""
