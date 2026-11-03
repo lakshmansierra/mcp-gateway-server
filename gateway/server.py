@@ -83,15 +83,19 @@ class Gateway:
                 tg.start_soon(refresh, u)
         return [(u, item) for u in upstreams if u.connected for item in pick(u)]
 
-    async def _forward(self, upstream: Upstream, call: Callable[[Any], Any]) -> Any:
-        """Run a call against an upstream; transport failures trigger a reconnect."""
-        client = upstream.require_client()
+    async def _forward(
+        self, ctx: ServerRequestContext[Any, Any], upstream: Upstream, call: Callable[[Any], Any]
+    ) -> Any:
+        """Run a call on the caller's own session to the upstream; transport failures trigger a reconnect."""
+        caller = _client_id(ctx)
+        client = await upstream.client_for(caller)
         try:
             return await call(client)
         except MCPError:
             raise
         except Exception as exc:
             logger.warning("Request to '%s' failed: %s", upstream.name, exc)
+            upstream.close_client(caller)
             upstream.mark_broken()
             raise UpstreamUnavailableError(f"Upstream '{upstream.name}' failed: {exc}") from exc
 
@@ -121,7 +125,7 @@ class Gateway:
             raise MCPError(types.INVALID_PARAMS, f"Tool '{params.name}' is not exposed by this gateway")
         logger.info("tools/call %s -> %s.%s", _caller(ctx), upstream_name, tool)
         try:
-            return await self._forward(upstream, lambda c: c.call_tool(tool, params.arguments))
+            return await self._forward(ctx, upstream, lambda c: c.call_tool(tool, params.arguments))
         except UpstreamUnavailableError as exc:
             return types.CallToolResult(content=[types.TextContent(text=str(exc))], is_error=True)
 
@@ -158,7 +162,7 @@ class Gateway:
         except MCPError:
             await self._gather(ctx, lambda u: ())  # catalog may be stale; refresh and retry once
             upstream = self._owner_of_uri(ctx, uri)
-        return await self._forward_or_error(upstream, lambda c: c.read_resource(uri))
+        return await self._forward_or_error(ctx, upstream, lambda c: c.read_resource(uri))
 
     # ---- prompts ----------------------------------------------------------
 
@@ -174,7 +178,7 @@ class Gateway:
     ) -> types.GetPromptResult:
         upstream_name, prompt = split_prefixed(params.name)
         upstream = self._resolve(ctx, upstream_name)
-        return await self._forward_or_error(upstream, lambda c: c.get_prompt(prompt, params.arguments))
+        return await self._forward_or_error(ctx, upstream, lambda c: c.get_prompt(prompt, params.arguments))
 
     # ---- completion -------------------------------------------------------
 
@@ -190,18 +194,25 @@ class Gateway:
             upstream = self._owner_of_uri(ctx, ref.uri)
         context_args = params.context.arguments if params.context else None
         argument = {"name": params.argument.name, "value": params.argument.value}
-        return await self._forward_or_error(upstream, lambda c: c.complete(ref, argument, context_args))
+        return await self._forward_or_error(ctx, upstream, lambda c: c.complete(ref, argument, context_args))
 
-    async def _forward_or_error(self, upstream: Upstream, call: Callable[[Any], Any]) -> Any:
+    async def _forward_or_error(
+        self, ctx: ServerRequestContext[Any, Any], upstream: Upstream, call: Callable[[Any], Any]
+    ) -> Any:
         try:
-            return await self._forward(upstream, call)
+            return await self._forward(ctx, upstream, call)
         except UpstreamUnavailableError as exc:
             raise MCPError(types.INTERNAL_ERROR, str(exc)) from exc
 
 
-def _caller(ctx: ServerRequestContext[Any, Any]) -> str:
+def _client_id(ctx: ServerRequestContext[Any, Any]) -> str | None:
+    """The calling client's identity (its API key name), or None when auth is off (stdio, GATEWAY_AUTH_ENABLED=false)."""
     key = api_key_from_request(ctx.request)
-    return key.name if key else "local"
+    return key.name if key else None
+
+
+def _caller(ctx: ServerRequestContext[Any, Any]) -> str:
+    return _client_id(ctx) or "local"
 
 
 def build_server(gateway: Gateway) -> Server[Any]:

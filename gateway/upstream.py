@@ -1,8 +1,14 @@
 """Connections to upstream (live) MCP servers.
 
 Each upstream is owned by a supervisor task that connects, keeps the session
-alive with periodic pings, and reconnects with exponential backoff when the
-upstream goes away. Request handlers only borrow the live `Client`.
+alive with periodic catalog refreshes, and reconnects with exponential backoff when
+the upstream goes away. That shared session is the gateway's own: it lists the catalog.
+
+Client requests (tools/call, resources/read, ...) use a separate session per client key,
+opened on first use and sent with `X-MCP-Client: <key name>` (plus that client's own
+headers, e.g. its own token, when configured), so the server sees which client is
+calling and no state is shared between clients. Idle client sessions close
+after CLIENT_SESSION_IDLE seconds; all of them close when the shared session drops.
 """
 
 from __future__ import annotations
@@ -26,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 HEALTH_CHECK_INTERVAL = 30.0
 CATALOG_TTL = 30.0
+CLIENT_SESSION_IDLE = 300.0
+CLIENT_ID_HEADER = "X-MCP-Client"
 
 
 class UpstreamUnavailableError(RuntimeError):
@@ -41,6 +49,17 @@ class Catalog:
     resource_templates: list[types.ResourceTemplate] = field(default_factory=list)
     prompts: list[types.Prompt] = field(default_factory=list)
     fetched_at: float = 0.0
+
+
+@dataclass
+class ClientSession:
+    """One client key's own session to an upstream."""
+
+    ready: anyio.Event = field(default_factory=anyio.Event)
+    closed: anyio.Event = field(default_factory=anyio.Event)
+    client: Client | None = None
+    error: str | None = None
+    last_used: float = field(default_factory=time.monotonic)
 
 
 async def _collect(fetch: Any, attr: str) -> list[Any]:
@@ -64,6 +83,8 @@ class Upstream:
         self.last_error: str | None = None
         self._broken = anyio.Event()
         self._refresh_lock = anyio.Lock()
+        self._sessions: dict[str, ClientSession] = {}
+        self._session_tg: anyio.abc.TaskGroup | None = None
 
     @property
     def name(self) -> str:
@@ -73,13 +94,25 @@ class Upstream:
     def connected(self) -> bool:
         return self.client is not None
 
-    def _transport(self, stack: AsyncExitStack) -> Any:
+    def _transport(self, stack: AsyncExitStack, caller: str | None = None) -> Any:
         cfg = self.config
+        if caller:  # the client's own headers (e.g. its own token) win over the server's defaults
+            headers = {**cfg.headers, **cfg.client_headers.get(caller, {}), CLIENT_ID_HEADER: caller}
+        else:
+            headers = cfg.headers
         if cfg.transport == "sse":
-            return sse_client(cfg.url, headers=cfg.headers or None, timeout=cfg.timeout_seconds)
-        http_client = create_mcp_http_client(headers=cfg.headers or None)
+            return sse_client(cfg.url, headers=headers or None, timeout=cfg.timeout_seconds)
+        http_client = create_mcp_http_client(headers=headers or None)
         stack.push_async_callback(http_client.aclose)
         return streamable_http_client(cfg.url, http_client=http_client)
+
+    def _new_client(self, stack: AsyncExitStack, caller: str | None = None) -> Client:
+        return Client(
+            self._transport(stack, caller),
+            read_timeout_seconds=self.config.timeout_seconds,
+            client_info=types.Implementation(name=self.settings.name, version="1.0.0"),
+            cache=None,
+        )
 
     async def run(self) -> None:
         """Supervisor loop: connect, serve, reconnect forever (until cancelled)."""
@@ -87,12 +120,7 @@ class Upstream:
         while True:
             try:
                 async with AsyncExitStack() as stack:
-                    client = Client(
-                        self._transport(stack),
-                        read_timeout_seconds=self.config.timeout_seconds,
-                        client_info=types.Implementation(name=self.settings.name, version="1.0.0"),
-                        cache=None,
-                    )
+                    client = self._new_client(stack)
                     await stack.enter_async_context(client)
                     self.client = client
                     await self.refresh_catalog(force=True)
@@ -105,7 +133,10 @@ class Upstream:
                         len(self.catalog.resources),
                         len(self.catalog.prompts),
                     )
-                    await self._monitor()
+                    async with anyio.create_task_group() as tg:  # hosts the per-client sessions
+                        self._session_tg = tg
+                        await self._monitor()
+                        tg.cancel_scope.cancel()
             except anyio.get_cancelled_exc_class():
                 raise
             except BaseException as exc:  # noqa: BLE001 - transports raise ExceptionGroups
@@ -113,6 +144,7 @@ class Upstream:
                 logger.warning("Upstream '%s' unavailable: %s", self.name, self.last_error)
             finally:
                 self.client = None
+                self._session_tg = None
                 self._broken = anyio.Event()
 
             logger.info("Reconnecting to '%s' in %.1fs", self.name, delay)
@@ -132,6 +164,54 @@ class Upstream:
 
     def mark_broken(self) -> None:
         self._broken.set()
+
+    async def client_for(self, caller: str | None) -> Client:
+        """The session to use for `caller` (a client key name); None means the gateway's shared session."""
+        shared = self.require_client()
+        if caller is None or self._session_tg is None:
+            return shared
+        session = self._sessions.get(caller)
+        if session is None or session.closed.is_set():
+            session = self._sessions[caller] = ClientSession()
+            self._session_tg.start_soon(self._serve_client, caller, session)
+        with anyio.move_on_after(self.config.timeout_seconds):
+            await session.ready.wait()
+        if session.client is None:
+            raise UpstreamUnavailableError(
+                f"Upstream '{self.name}' refused a session for '{caller}': {session.error or 'timed out'}"
+            )
+        session.last_used = time.monotonic()
+        return session.client
+
+    def close_client(self, caller: str | None) -> None:
+        if caller is not None and (session := self._sessions.get(caller)):
+            session.closed.set()
+
+    async def _serve_client(self, caller: str, session: ClientSession) -> None:
+        """Owns one client's session: open it, keep it until idle or closed, then close it."""
+        try:
+            async with AsyncExitStack() as stack:
+                client = self._new_client(stack, caller)
+                await stack.enter_async_context(client)
+                session.client = client
+                session.ready.set()
+                logger.info("Opened session to '%s' for client '%s'", self.name, caller)
+                while (idle := time.monotonic() - session.last_used) < CLIENT_SESSION_IDLE:
+                    with anyio.move_on_after(CLIENT_SESSION_IDLE - idle):
+                        await session.closed.wait()
+                        break
+                logger.info("Closed session to '%s' for client '%s'", self.name, caller)
+        except anyio.get_cancelled_exc_class():
+            raise
+        except BaseException as exc:  # noqa: BLE001 - transports raise ExceptionGroups
+            session.error = _describe(exc)
+            logger.warning("Session to '%s' for client '%s' failed: %s", self.name, caller, session.error)
+        finally:
+            session.client = None
+            session.closed.set()
+            session.ready.set()
+            if self._sessions.get(caller) is session:
+                del self._sessions[caller]
 
     def require_client(self) -> Client:
         if self.client is None:
@@ -168,6 +248,7 @@ class Upstream:
             "tools": len(self.catalog.tools) if self.connected else 0,
             "resources": len(self.catalog.resources) if self.connected else 0,
             "prompts": len(self.catalog.prompts) if self.connected else 0,
+            "client_sessions": sorted(self._sessions),
             "last_error": self.last_error,
         }
 

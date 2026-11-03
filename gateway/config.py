@@ -7,6 +7,7 @@
     SERVER_<ID>_KEY=<secret>                    a client API key for that server only
     SERVER_<ID>_HEADER_<HEADER>=value           a header sent to it (`_` in <HEADER> becomes `-`)
     SERVER_<ID>_HEADER_AUTHORIZATION=<token>    sent as "Authorization: Bearer <token>"
+    SERVER_<ID>_CLIENT_<KEY>_HEADER_<HEADER>=v  a header sent only for client key <KEY> (overrides the one above)
 
 SERVER_<ID> lowercased is the server's name and tool prefix, e.g. SERVER_1_URL -> "server_1" -> server_1__add.
 """
@@ -39,6 +40,7 @@ UPSTREAM_FIELDS = {
     "_URL": "url",
 }
 HEADER_MARKER = "_HEADER_"
+CLIENT_MARKER = "_CLIENT_"
 LIST_FIELDS = {"include_tools", "exclude_tools", "allowed_hosts"}
 GATEWAY_FIELDS = {
     "GATEWAY_NAME": "name",
@@ -71,6 +73,8 @@ class UpstreamConfig(BaseModel):
     url: str
     transport: Literal["streamable_http", "sse"] = "streamable_http"
     headers: dict[str, str] = Field(default_factory=dict)
+    # Per client key name: headers sent on that client's own session, over `headers` (e.g. its own token).
+    client_headers: dict[str, dict[str, str]] = Field(default_factory=dict)
     enabled: bool = True
     timeout_seconds: float = 60.0
     # Glob patterns on the upstream's own tool names (before prefixing).
@@ -158,8 +162,13 @@ def _parse_upstreams(env: Mapping[str, str]) -> list[dict[str, Any]]:
             continue
         if HEADER_MARKER in var:
             server, header = var.split(HEADER_MARKER, 1)
+            server, _, client = server.partition(CLIENT_MARKER)
             entry = upstreams.setdefault(server.lower(), {"name": server.lower()})
-            entry.setdefault("headers", {})[header.replace("_", "-")] = _header_value(header, value)
+            if client:
+                headers = entry.setdefault("client_headers", {}).setdefault(client.lower(), {})
+            else:
+                headers = entry.setdefault("headers", {})
+            headers[header.replace("_", "-")] = _header_value(header, value)
             continue
         for suffix, field_name in UPSTREAM_FIELDS.items():
             if var.endswith(suffix) and len(var) > len(SERVER_PREFIX) + len(suffix):
@@ -210,6 +219,10 @@ def load_config(env: Mapping[str, str] | None = None) -> GatewayConfig:
         if u.get("client_key")
     ]
     auth: dict[str, Any] = {"api_keys": _parse_api_keys(env) + server_keys}
+    key_names = {k["name"] for k in auth["api_keys"]}
+    for u in upstreams:
+        for client in sorted(set(u.get("client_headers", {})) - key_names):
+            logger.warning("%s_CLIENT_%s_HEADER_*: no client key named '%s'", u["name"].upper(), client.upper(), client)
     if env.get("GATEWAY_AUTH_ENABLED", "") != "":
         auth["enabled"] = env["GATEWAY_AUTH_ENABLED"]
     return GatewayConfig.model_validate({"gateway": gateway, "auth": auth, "upstreams": upstreams})

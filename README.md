@@ -24,6 +24,12 @@ through one authenticated URL. Clients don't connect to upstream servers directl
   gateway routes each read to the server that owns the URI.
 - **API-key auth.** Clients send `Authorization: Bearer <key>` or `X-API-Key: <key>`.
   You can limit a key to certain upstreams with glob patterns.
+- **Per-client identity.** Each client key gets its own session to each server, sent with
+  `X-MCP-Client: <key name>` (for example `admin`, `group_1`, `server_3_key`). So servers see
+  which client is calling, and no session state is shared between clients. Sessions open on
+  first use and close after 5 idle minutes; `/health` lists the open ones per server. A client
+  can also have its own token per server (`SERVER_<ID>_CLIENT_<KEY>_HEADER_AUTHORIZATION`);
+  clients without one use the server's token. The sample servers' `whoami` tool shows both.
 - **Tool filtering.** Each upstream has `_INCLUDE_TOOLS` / `_EXCLUDE_TOOLS` globs, so you
   can hide dangerous tools (for example `delete_*`).
 - **Resilience.** Each upstream has its own supervisor that health-checks the connection
@@ -50,7 +56,7 @@ python servers/server_1/server_1.py    # port 9001
 python servers/server_2/server_2.py    # port 9002
 python servers/server_3/server_3.py    # port 9003
 python main.py                         # gateway on port 8080
-python clients/client_1/client_1.py    # admin key: lists and calls tools on every server
+python clients/client_1/client.py      # admin key: lists and calls tools on every server
 python clients/client_2/client.py      # GPT-4.1 agent with a server-level key
 python clients/client_3/client.py      # GPT-4.1 agent with a group-level key
 ```
@@ -82,6 +88,7 @@ variables already set in the real environment take precedence. See
 | `SERVER_<ID>_KEY` | | Client key that gives access to this server only |
 | `SERVER_<ID>_TRANSPORT` | `streamable_http` | `streamable_http` or `sse` (legacy servers) |
 | `SERVER_<ID>_HEADER_<HEADER>` | | Header sent to the server; `_` becomes `-` (`X_API_KEY` → `X-API-KEY`) |
+| `SERVER_<ID>_CLIENT_<KEY>_HEADER_<HEADER>` | | Header sent only on client key `<KEY>`'s session, over the one above (e.g. `SERVER_1_CLIENT_GROUP_1_HEADER_AUTHORIZATION`) |
 | `SERVER_<ID>_TIMEOUT` | `60` | Per-request timeout in seconds |
 | `SERVER_<ID>_ENABLED` | `true` | Set to `false` to turn off without deleting |
 | `SERVER_<ID>_INCLUDE_TOOLS` | all | Comma-separated globs of tools to expose |

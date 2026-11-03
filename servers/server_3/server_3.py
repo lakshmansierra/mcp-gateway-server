@@ -4,9 +4,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # project root, so project imports work when run as a file
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 
-from servers._server_auth import protect
+from servers._server_auth import client_of, protect, token_owner
 
 
 def build(name: str) -> MCPServer:
@@ -31,6 +31,11 @@ def build(name: str) -> MCPServer:
     def echo(text: str) -> str:
         """Echo text back, tagged with this server's name."""
         return f"{name}: {text}"
+
+    @mcp.tool()
+    def whoami(ctx: Context) -> str:
+        """Which client the gateway is calling this server for."""
+        return f"{name} is serving client '{client_of(ctx)}' (let in by the {token_owner(ctx)} token)"
 
     @mcp.tool()
     def delete_everything() -> str:
