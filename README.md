@@ -66,8 +66,9 @@ variables already set in the real environment take precedence. See
 
 | variable | meaning |
 |---|---|
-| `API_KEY_<NAME>` | A key clients send as `Authorization: Bearer <key>` |
-| `API_KEY_<NAME>_SERVERS` | Optional comma-separated globs; the key only sees those servers |
+| `API_KEY_<NAME>` | A key clients send as `Authorization: Bearer <key>`; reaches every server |
+| `SERVER_<ID>_KEY` | A key that reaches only that one server (set next to its `_URL`) |
+| `API_KEY_<NAME>_SERVERS` | Optional comma-separated globs; limits an `API_KEY_<NAME>` to those servers |
 
 **MCP servers.** `SERVER_<ID>` in lowercase becomes the server's name and tool prefix, so
 `SERVER_1_URL` gives tools named `server_1__...`.
@@ -75,6 +76,7 @@ variables already set in the real environment take precedence. See
 | variable | default | meaning |
 |---|---|---|
 | `SERVER_<ID>_URL` | required | The server's live MCP URL |
+| `SERVER_<ID>_KEY` | | Client key that gives access to this server only |
 | `SERVER_<ID>_TRANSPORT` | `streamable_http` | `streamable_http` or `sse` (legacy servers) |
 | `SERVER_<ID>_HEADER_<HEADER>` | | Header sent to the server; `_` becomes `-` (`X_API_KEY` → `X-API-KEY`) |
 | `SERVER_<ID>_TIMEOUT` | `60` | Per-request timeout in seconds |

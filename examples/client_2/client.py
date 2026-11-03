@@ -1,8 +1,8 @@
 """AI agent (GPT-4.1 via SAP Gen AI Hub) that uses MCP tools through the gateway.
 
 The agent never knows where the MCP servers are. It connects to the gateway with
-API_KEY_AGENT, which the gateway limits to server_2 (API_KEY_AGENT_SERVERS=server_2),
-so the model only sees and calls server_2's tools.
+SERVER_2_KEY, a key the gateway accepts for server_2 only, so the model only sees
+and calls server_2's tools.
 
     python examples/client_2/client.py
 """
@@ -27,7 +27,7 @@ from _llm.models_llm import agentic_transformer_func_llm
 
 load_dotenv()
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://127.0.0.1:8080/mcp")
-GATEWAY_API_KEY = os.getenv("API_KEY_AGENT")
+GATEWAY_API_KEY = os.getenv("SERVER_2_KEY")
 
 
 def connect_gateway() -> Client:

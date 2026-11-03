@@ -1,9 +1,10 @@
 """Gateway configuration, read from environment variables (optionally loaded from a .env file).
 
     GATEWAY_HOST, GATEWAY_PORT, ...           gateway settings
-    API_KEY_<NAME>=<secret>                     a client API key
+    API_KEY_<NAME>=<secret>                     a client API key for every server
     API_KEY_<NAME>_SERVERS=server_1,server_2    restrict that key to some MCP servers
     SERVER_<ID>_URL=https://...                 an MCP server behind the gateway
+    SERVER_<ID>_KEY=<secret>                    a client API key for that server only
     SERVER_<ID>_HEADER_<HEADER>=value           a header sent to it (`_` in <HEADER> becomes `-`)
 
 SERVER_<ID> lowercased is the server's name and tool prefix, e.g. SERVER_1_URL -> "server_1" -> server_1__add.
@@ -33,6 +34,7 @@ UPSTREAM_FIELDS = {
     "_TRANSPORT": "transport",
     "_ENABLED": "enabled",
     "_TIMEOUT": "timeout_seconds",
+    "_KEY": "client_key",
     "_URL": "url",
 }
 HEADER_MARKER = "_HEADER_"
@@ -65,6 +67,8 @@ class UpstreamConfig(BaseModel):
     # Glob patterns on the upstream's own tool names (before prefixing).
     include_tools: list[str] = Field(default_factory=lambda: ["*"])
     exclude_tools: list[str] = Field(default_factory=list)
+    # A key clients can send to reach this server and no other (SERVER_<ID>_KEY).
+    client_key: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -107,6 +111,16 @@ class GatewaySettings(BaseModel):
 class AuthSettings(BaseModel):
     enabled: bool = True
     api_keys: list[ApiKeyConfig] = Field(default_factory=list)
+
+    @field_validator("api_keys")
+    @classmethod
+    def _unique_secrets(cls, v: list[ApiKeyConfig]) -> list[ApiKeyConfig]:
+        # The secret alone identifies the caller, so two keys sharing one would make access ambiguous.
+        secrets = [k.key for k in v]
+        dupes = sorted({k.name for k in v if secrets.count(k.key) > 1})
+        if dupes:
+            raise ValueError(f"API keys {dupes} use the same secret; every key needs its own value")
+        return v
 
 
 class GatewayConfig(BaseModel):
@@ -180,7 +194,13 @@ def load_config(env: Mapping[str, str] | None = None) -> GatewayConfig:
         for var, field_name in GATEWAY_FIELDS.items()
         if env.get(var, "") != ""
     }
-    auth: dict[str, Any] = {"api_keys": _parse_api_keys(env)}
+    upstreams = _parse_upstreams(env)
+    server_keys = [
+        {"name": f"{u['name']}_key", "key": u["client_key"], "upstreams": [u["name"]]}
+        for u in upstreams
+        if u.get("client_key")
+    ]
+    auth: dict[str, Any] = {"api_keys": _parse_api_keys(env) + server_keys}
     if env.get("GATEWAY_AUTH_ENABLED", "") != "":
         auth["enabled"] = env["GATEWAY_AUTH_ENABLED"]
-    return GatewayConfig.model_validate({"gateway": gateway, "auth": auth, "upstreams": _parse_upstreams(env)})
+    return GatewayConfig.model_validate({"gateway": gateway, "auth": auth, "upstreams": upstreams})
