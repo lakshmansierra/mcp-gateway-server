@@ -6,6 +6,7 @@
     SERVER_<ID>_URL=https://...                 an MCP server behind the gateway
     SERVER_<ID>_KEY=<secret>                    a client API key for that server only
     SERVER_<ID>_HEADER_<HEADER>=value           a header sent to it (`_` in <HEADER> becomes `-`)
+    SERVER_<ID>_HEADER_AUTHORIZATION=<token>    sent as "Authorization: Bearer <token>"
 
 SERVER_<ID> lowercased is the server's name and tool prefix, e.g. SERVER_1_URL -> "server_1" -> server_1__add.
 """
@@ -49,6 +50,14 @@ GATEWAY_FIELDS = {
     "GATEWAY_RECONNECT_MAX_DELAY": "reconnect_max_delay",
     "GATEWAY_LOG_LEVEL": "log_level",
 }
+
+
+def _header_value(header: str, value: str) -> str:
+    """A bare token in an Authorization header becomes 'Bearer <token>'; values with a scheme ('Basic ...') are kept."""
+    value = value.strip()
+    if header.upper() == "AUTHORIZATION" and " " not in value:
+        return f"Bearer {value}"
+    return value
 
 
 def _split_list(value: str) -> list[str]:
@@ -150,7 +159,7 @@ def _parse_upstreams(env: Mapping[str, str]) -> list[dict[str, Any]]:
         if HEADER_MARKER in var:
             server, header = var.split(HEADER_MARKER, 1)
             entry = upstreams.setdefault(server.lower(), {"name": server.lower()})
-            entry.setdefault("headers", {})[header.replace("_", "-")] = value
+            entry.setdefault("headers", {})[header.replace("_", "-")] = _header_value(header, value)
             continue
         for suffix, field_name in UPSTREAM_FIELDS.items():
             if var.endswith(suffix) and len(var) > len(SERVER_PREFIX) + len(suffix):

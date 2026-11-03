@@ -1,0 +1,288 @@
+{
+    "messages": [
+        {
+            "lc": 1,
+            "type": "constructor",
+            "id": [
+                "langchain",
+                "schema",
+                "messages",
+                "HumanMessage"
+            ],
+            "kwargs": {
+                "content": "{\n  \"instructions\": \"\\nYou have access to math tools.\\nCall only the appropriate tools needed as much it is needed, don't unwantedly call unwanted tools\\njust let the tools do the work, your job is just to select the tools and not to answer on your own, If no tools are needed, dont use any and also dont answer on your own for the prompt\\n\\nTask:\\n1. Multiply the output of sum of 1 and 3 with the greatest number among inputs of 1 and 3\\n\\nUse tools when needed.\\nReturn only the final number.\\n\"\n}",
+                "type": "human",
+                "id": "2b765968-f25d-4322-9513-baeb345294c5"
+            }
+        },
+        {
+            "lc": 1,
+            "type": "constructor",
+            "id": [
+                "langchain",
+                "schema",
+                "messages",
+                "AIMessage"
+            ],
+            "kwargs": {
+                "content": "",
+                "additional_kwargs": {
+                    "refusal": null
+                },
+                "response_metadata": {
+                    "token_usage": {
+                        "completion_tokens": 21,
+                        "prompt_tokens": 300,
+                        "total_tokens": 321,
+                        "completion_tokens_details": {
+                            "accepted_prediction_tokens": 0,
+                            "audio_tokens": 0,
+                            "reasoning_tokens": 0,
+                            "rejected_prediction_tokens": 0,
+                            "text_tokens": null
+                        },
+                        "prompt_tokens_details": {
+                            "audio_tokens": 0,
+                            "cache_write_tokens": null,
+                            "cached_tokens": 0,
+                            "image_tokens": null,
+                            "text_tokens": null
+                        },
+                        "latency_checkpoint": {
+                            "engine_tbt_ms": 5,
+                            "engine_ttft_ms": 49,
+                            "engine_ttlt_ms": 164,
+                            "pre_inference_ms": 91,
+                            "service_tbt_ms": 5,
+                            "service_ttft_ms": 291,
+                            "service_ttlt_ms": 401,
+                            "user_visible_ttft_ms": 200
+                        }
+                    },
+                    "model_provider": "openai",
+                    "model_name": "gpt-4.1-2025-04-14",
+                    "system_fingerprint": "fp_240a1b8370",
+                    "id": "chatcmpl-Eg8PcVvGonGjVMtYnvdxTEmCfQQLQ",
+                    "service_tier": "default",
+                    "finish_reason": "tool_calls",
+                    "logprobs": null
+                },
+                "type": "ai",
+                "id": "lc_run--01a1a17f-0581-7623-9146-69a0214ad28f-0",
+                "tool_calls": [
+                    {
+                        "name": "server_3__add",
+                        "args": {
+                            "a": 1,
+                            "b": 3
+                        },
+                        "id": "call_EzetDifu4p8xH0l1MzCdBrln",
+                        "type": "tool_call"
+                    }
+                ],
+                "usage_metadata": {
+                    "input_tokens": 300,
+                    "output_tokens": 21,
+                    "total_tokens": 321,
+                    "input_token_details": {
+                        "audio": 0,
+                        "cache_read": 0
+                    },
+                    "output_token_details": {
+                        "audio": 0,
+                        "reasoning": 0
+                    }
+                },
+                "invalid_tool_calls": []
+            }
+        },
+        {
+            "lc": 1,
+            "type": "constructor",
+            "id": [
+                "langchain",
+                "schema",
+                "messages",
+                "ToolMessage"
+            ],
+            "kwargs": {
+                "content": "4",
+                "type": "tool",
+                "name": "server_3__add",
+                "id": "c0e58985-1116-4f68-aea2-58e2e1d01cbc",
+                "tool_call_id": "call_EzetDifu4p8xH0l1MzCdBrln",
+                "status": "success"
+            }
+        },
+        {
+            "lc": 1,
+            "type": "constructor",
+            "id": [
+                "langchain",
+                "schema",
+                "messages",
+                "AIMessage"
+            ],
+            "kwargs": {
+                "content": "",
+                "additional_kwargs": {
+                    "refusal": null
+                },
+                "response_metadata": {
+                    "token_usage": {
+                        "completion_tokens": 21,
+                        "prompt_tokens": 333,
+                        "total_tokens": 354,
+                        "completion_tokens_details": {
+                            "accepted_prediction_tokens": 0,
+                            "audio_tokens": 0,
+                            "reasoning_tokens": 0,
+                            "rejected_prediction_tokens": 0,
+                            "text_tokens": null
+                        },
+                        "prompt_tokens_details": {
+                            "audio_tokens": 0,
+                            "cache_write_tokens": null,
+                            "cached_tokens": 0,
+                            "image_tokens": null,
+                            "text_tokens": null
+                        },
+                        "latency_checkpoint": {
+                            "engine_tbt_ms": 4,
+                            "engine_ttft_ms": 38,
+                            "engine_ttlt_ms": 119,
+                            "pre_inference_ms": 81,
+                            "service_tbt_ms": 4,
+                            "service_ttft_ms": 266,
+                            "service_ttlt_ms": 343,
+                            "user_visible_ttft_ms": 185
+                        }
+                    },
+                    "model_provider": "openai",
+                    "model_name": "gpt-4.1-2025-04-14",
+                    "system_fingerprint": "fp_240a1b8370",
+                    "id": "chatcmpl-Eg8PeDaZHWH7m2E7BV0GfVp97lpew",
+                    "service_tier": "default",
+                    "finish_reason": "tool_calls",
+                    "logprobs": null
+                },
+                "type": "ai",
+                "id": "lc_run--01a1a17f-0ddb-779c-aa9c-e957ef6cca9d-0",
+                "tool_calls": [
+                    {
+                        "name": "server_3__multiply",
+                        "args": {
+                            "a": 4,
+                            "b": 3
+                        },
+                        "id": "call_DOp9xR7MYZeCqMpVE4bdMaEv",
+                        "type": "tool_call"
+                    }
+                ],
+                "usage_metadata": {
+                    "input_tokens": 333,
+                    "output_tokens": 21,
+                    "total_tokens": 354,
+                    "input_token_details": {
+                        "audio": 0,
+                        "cache_read": 0
+                    },
+                    "output_token_details": {
+                        "audio": 0,
+                        "reasoning": 0
+                    }
+                },
+                "invalid_tool_calls": []
+            }
+        },
+        {
+            "lc": 1,
+            "type": "constructor",
+            "id": [
+                "langchain",
+                "schema",
+                "messages",
+                "ToolMessage"
+            ],
+            "kwargs": {
+                "content": "12",
+                "type": "tool",
+                "name": "server_3__multiply",
+                "id": "2715f541-dc62-40a2-a8b3-1c62eb17af66",
+                "tool_call_id": "call_DOp9xR7MYZeCqMpVE4bdMaEv",
+                "status": "success"
+            }
+        },
+        {
+            "lc": 1,
+            "type": "constructor",
+            "id": [
+                "langchain",
+                "schema",
+                "messages",
+                "AIMessage"
+            ],
+            "kwargs": {
+                "content": "12",
+                "additional_kwargs": {
+                    "refusal": null
+                },
+                "response_metadata": {
+                    "token_usage": {
+                        "completion_tokens": 2,
+                        "prompt_tokens": 366,
+                        "total_tokens": 368,
+                        "completion_tokens_details": {
+                            "accepted_prediction_tokens": 0,
+                            "audio_tokens": 0,
+                            "reasoning_tokens": 0,
+                            "rejected_prediction_tokens": 0,
+                            "text_tokens": null
+                        },
+                        "prompt_tokens_details": {
+                            "audio_tokens": 0,
+                            "cache_write_tokens": null,
+                            "cached_tokens": 0,
+                            "image_tokens": null,
+                            "text_tokens": null
+                        },
+                        "latency_checkpoint": {
+                            "engine_tbt_ms": 7,
+                            "engine_ttft_ms": 32,
+                            "engine_ttlt_ms": 52,
+                            "pre_inference_ms": 131,
+                            "service_tbt_ms": 11,
+                            "service_ttft_ms": 309,
+                            "service_ttlt_ms": 331,
+                            "user_visible_ttft_ms": 178
+                        }
+                    },
+                    "model_provider": "openai",
+                    "model_name": "gpt-4.1-2025-04-14",
+                    "system_fingerprint": "fp_240a1b8370",
+                    "id": "chatcmpl-Eg8PftOc4pQtAlOxRuGp3Xfz8sjmD",
+                    "service_tier": "default",
+                    "finish_reason": "stop",
+                    "logprobs": null
+                },
+                "type": "ai",
+                "id": "lc_run--01a1a17f-1199-718f-8375-7b99bc4c17f6-0",
+                "usage_metadata": {
+                    "input_tokens": 366,
+                    "output_tokens": 2,
+                    "total_tokens": 368,
+                    "input_token_details": {
+                        "audio": 0,
+                        "cache_read": 0
+                    },
+                    "output_token_details": {
+                        "audio": 0,
+                        "reasoning": 0
+                    }
+                },
+                "tool_calls": [],
+                "invalid_tool_calls": []
+            }
+        }
+    ]
+}

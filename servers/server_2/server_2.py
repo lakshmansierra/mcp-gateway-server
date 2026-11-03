@@ -1,5 +1,12 @@
 import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # project root, so project imports work when run as a file
+
 from mcp.server.mcpserver import MCPServer
+
+from servers._server_auth import protect
 
 
 def build(name: str) -> MCPServer:
@@ -52,7 +59,9 @@ if __name__ == "__main__":
     import uvicorn
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--name", default="server_1")
-    parser.add_argument("--port", type=int, default=9001)
+    parser.add_argument("--name", default="server_2")
+    parser.add_argument("--port", type=int, default=9002)
+    parser.add_argument("--token", help="token callers must send; defaults to <NAME>_HEADER_AUTHORIZATION from .env")
     args = parser.parse_args()
-    uvicorn.run(build(args.name).streamable_http_app(), host="127.0.0.1", port=args.port)
+    app = protect(build(args.name).streamable_http_app(), args.name, args.token)
+    uvicorn.run(app, host="127.0.0.1", port=args.port)

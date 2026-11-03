@@ -4,12 +4,14 @@ The agent never knows where the MCP servers are. It connects to the gateway with
 SERVER_2_KEY, a key the gateway accepts for server_2 only, so the model only sees
 and calls server_2's tools.
 
-    python examples/client_2/client.py
+    python clients/client_2/client.py
 """
 
 import json
 import os
+import sys
 import asyncio
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
@@ -21,13 +23,15 @@ from mcp.client import Client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client
 
-from _prompt.agentic_math_func_prompt import HUMAN_AGENTIC_PROMPT
-from _util.file_ops import write_json
-from _llm.models_llm import agentic_transformer_func_llm
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # project root, so project imports work when run as a file
+
+from clients.client_2._prompt.agentic_math_func_prompt import HUMAN_AGENTIC_PROMPT
+from clients.client_2._util.file_ops import write_json
+from clients.client_2._llm.models_llm import agentic_transformer_func_llm
 
 load_dotenv()
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://127.0.0.1:8080/mcp")
-GATEWAY_API_KEY = os.getenv("SERVER_2_KEY")
+GATEWAY_API_KEY = os.getenv("SERVER_3_KEY")
 
 
 def connect_gateway() -> Client:

@@ -1,7 +1,7 @@
 """An MCP client that talks only to the gateway, never to the upstream servers directly.
 
-    python examples/client_1/client_1.py
-    python examples/client_1/client_1.py --url http://127.0.0.1:8080/mcp --key <api key>
+    python clients/client_1/client_1.py
+    python clients/client_1/client_1.py --url http://127.0.0.1:8080/mcp --key <api key>
 
 The key defaults to GATEWAY_API_KEY, falling back to API_KEY_ADMIN from the project's .env.
 """

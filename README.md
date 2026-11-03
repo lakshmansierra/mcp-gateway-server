@@ -43,13 +43,16 @@ cp .env.example .env     # then edit servers + keys
 python main.py           # reads .env; use --env-file <path> for another file
 ```
 
-To try it locally, run the two sample servers (registered as `SERVER_1_URL` / `SERVER_2_URL` in `.env`):
+To try it locally, run the three sample servers (registered as `SERVER_<N>_URL` in `.env`), then the gateway, then a client:
 
 ```bash
-python examples/server_1.py      # port 9001
-python examples/server_2.py      # port 9002
-python main.py                   # gateway on port 8080
-python examples/client.py        # lists and calls the tools through the gateway
+python servers/server_1/server_1.py    # port 9001
+python servers/server_2/server_2.py    # port 9002
+python servers/server_3/server_3.py    # port 9003
+python main.py                         # gateway on port 8080
+python clients/client_1/client_1.py    # admin key: lists and calls tools on every server
+python clients/client_2/client.py      # GPT-4.1 agent with a server-level key
+python clients/client_3/client.py      # GPT-4.1 agent with a group-level key
 ```
 
 ## Configuration
@@ -139,7 +142,10 @@ gateway/
   server.py     MCP handlers: aggregate lists, route calls/reads/prompts
   auth.py       API-key ASGI middleware + per-key upstream scoping
   app.py        Starlette app: /mcp + /health
-examples/server_1.py   a small MCP server for local testing (port 9001)
-examples/server_2.py   a second copy on port 9002
-examples/client.py     a client that calls the tools through the gateway
+servers/
+  _server_auth.py           bearer-token check shared by the sample servers
+  server_1/ server_2/ server_3/   sample MCP servers (ports 9001-9003)
+clients/
+  client_1/                 plain MCP client using the admin key
+  client_2/ client_3/       GPT-4.1 agents (SAP Gen AI Hub) using server / group keys
 ```
