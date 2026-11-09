@@ -25,7 +25,7 @@ through one authenticated URL. Clients don't connect to upstream servers directl
 - **API-key auth.** Clients send `Authorization: Bearer <key>` or `X-API-Key: <key>`.
   You can limit a key to certain upstreams with glob patterns.
 - **Per-client identity.** Each client key gets its own session to each server, sent with
-  `X-MCP-Client: <key name>` (for example `admin`, `group_1`, `server_3_key`). So servers see
+  `X-MCP-Client: <key name>` (for example `admin`, `group_1`). So servers see
   which client is calling, and no session state is shared between clients. Sessions open on
   first use and close after 5 idle minutes; `/health` lists the open ones per server. The
   sample servers' `whoami` tool shows it.
@@ -56,8 +56,8 @@ python servers/server_2/server_2.py    # port 9002
 python servers/server_3/server_3.py    # port 9003
 python main.py                         # gateway on port 8080
 python clients/client_1/client.py      # admin key: lists and calls tools on every server
-python clients/client_2/client.py      # GPT-4.1 agent with a server-level key
-python clients/client_3/client.py      # GPT-4.1 agent with a group-level key
+python clients/client_2/client.py      # GPT-4.1 agent with API_KEY_GROUP_4 (server_4 only)
+python clients/client_3/client.py      # GPT-4.1 agent with API_KEY_GROUP_1 (server_1 only)
 ```
 
 ## Configuration
@@ -74,9 +74,8 @@ variables already set in the real environment take precedence. See
 
 | variable | meaning |
 |---|---|
-| `API_KEY_<NAME>` | A key clients send as `Authorization: Bearer <key>`; reaches every server |
-| `SERVER_<ID>_KEY` | A key that reaches only that one server (set next to its `_URL`) |
-| `API_KEY_<NAME>_SERVERS` | Optional comma-separated globs; limits an `API_KEY_<NAME>` to those servers |
+| `API_KEY_<NAME>` | A key clients send as `Authorization: Bearer <key>`; without `_SERVERS` it reaches every server (admin) |
+| `API_KEY_<NAME>_SERVERS` | Makes the key a group: comma-separated servers (or globs) it may reach, one or many |
 
 **MCP servers.** `SERVER_<ID>` in lowercase becomes the server's name and tool prefix, so
 `SERVER_1_URL` gives tools named `server_1__...`.
@@ -84,7 +83,6 @@ variables already set in the real environment take precedence. See
 | variable | default | meaning |
 |---|---|---|
 | `SERVER_<ID>_URL` | required | The server's live MCP URL |
-| `SERVER_<ID>_KEY` | | Client key that gives access to this server only |
 | `SERVER_<ID>_TRANSPORT` | `streamable_http` | `streamable_http` or `sse` (legacy servers) |
 | `SERVER_<ID>_HEADER_<HEADER>` | | Header sent to the server; `_` becomes `-` (`X_API_KEY` → `X-API-KEY`) |
 | `SERVER_<ID>_TIMEOUT` | `60` | Per-request timeout in seconds |

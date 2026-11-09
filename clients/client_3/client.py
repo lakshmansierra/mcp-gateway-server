@@ -31,7 +31,7 @@ from clients.client_3._llm.models_llm import agentic_transformer_func_llm
 
 load_dotenv()
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://127.0.0.1:8080/mcp")
-GATEWAY_API_KEY = os.getenv("API_KEY_GROUP_1")
+GATEWAY_API_KEY = os.getenv("API_KEY_GROUP_5")
 
 
 def connect_gateway() -> Client:

@@ -4,7 +4,6 @@
     API_KEY_<NAME>=<secret>                     a client API key for every server
     API_KEY_<NAME>_SERVERS=server_1,server_2    restrict that key to some MCP servers
     SERVER_<ID>_URL=https://...                 an MCP server behind the gateway
-    SERVER_<ID>_KEY=<secret>                    a client API key for that server only
     SERVER_<ID>_HEADER_<HEADER>=value           a header sent to it (`_` in <HEADER> becomes `-`)
     SERVER_<ID>_HEADER_AUTHORIZATION=<token>    sent as "Authorization: Bearer <token>"
 
@@ -35,7 +34,6 @@ UPSTREAM_FIELDS = {
     "_TRANSPORT": "transport",
     "_ENABLED": "enabled",
     "_TIMEOUT": "timeout_seconds",
-    "_KEY": "client_key",
     "_URL": "url",
 }
 HEADER_MARKER = "_HEADER_"
@@ -76,8 +74,6 @@ class UpstreamConfig(BaseModel):
     # Glob patterns on the upstream's own tool names (before prefixing).
     include_tools: list[str] = Field(default_factory=lambda: ["*"])
     exclude_tools: list[str] = Field(default_factory=list)
-    # A key clients can send to reach this server and no other (SERVER_<ID>_KEY).
-    client_key: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -204,12 +200,7 @@ def load_config(env: Mapping[str, str] | None = None) -> GatewayConfig:
         if env.get(var, "") != ""
     }
     upstreams = _parse_upstreams(env)
-    server_keys = [
-        {"name": f"{u['name']}_key", "key": u["client_key"], "upstreams": [u["name"]]}
-        for u in upstreams
-        if u.get("client_key")
-    ]
-    auth: dict[str, Any] = {"api_keys": _parse_api_keys(env) + server_keys}
+    auth: dict[str, Any] = {"api_keys": _parse_api_keys(env)}
     if env.get("GATEWAY_AUTH_ENABLED", "") != "":
         auth["enabled"] = env["GATEWAY_AUTH_ENABLED"]
     return GatewayConfig.model_validate({"gateway": gateway, "auth": auth, "upstreams": upstreams})
