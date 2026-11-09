@@ -5,9 +5,8 @@ alive with periodic catalog refreshes, and reconnects with exponential backoff w
 the upstream goes away. That shared session is the gateway's own: it lists the catalog.
 
 Client requests (tools/call, resources/read, ...) use a separate session per client key,
-opened on first use and sent with `X-MCP-Client: <key name>` (plus that client's own
-headers, e.g. its own token, when configured), so the server sees which client is
-calling and no state is shared between clients. Idle client sessions close
+opened on first use and sent with `X-MCP-Client: <key name>`, so the server sees which
+client is calling and no state is shared between clients. Idle client sessions close
 after CLIENT_SESSION_IDLE seconds; all of them close when the shared session drops.
 """
 
@@ -96,10 +95,7 @@ class Upstream:
 
     def _transport(self, stack: AsyncExitStack, caller: str | None = None) -> Any:
         cfg = self.config
-        if caller:  # the client's own headers (e.g. its own token) win over the server's defaults
-            headers = {**cfg.headers, **cfg.client_headers.get(caller, {}), CLIENT_ID_HEADER: caller}
-        else:
-            headers = cfg.headers
+        headers = {**cfg.headers, CLIENT_ID_HEADER: caller} if caller else cfg.headers
         if cfg.transport == "sse":
             return sse_client(cfg.url, headers=headers or None, timeout=cfg.timeout_seconds)
         http_client = create_mcp_http_client(headers=headers or None)

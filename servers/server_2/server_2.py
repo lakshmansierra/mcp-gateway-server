@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # project root, so
 
 from mcp.server.mcpserver import Context, MCPServer
 
-from servers._server_auth import client_of, protect, token_owner
+from servers._server_auth import client_of, protect
 
 
 def build(name: str) -> MCPServer:
@@ -35,7 +35,7 @@ def build(name: str) -> MCPServer:
     @mcp.tool()
     def whoami(ctx: Context) -> str:
         """Which client the gateway is calling this server for."""
-        return f"{name} is serving client '{client_of(ctx)}' (let in by the {token_owner(ctx)} token)"
+        return f"{name} is serving client '{client_of(ctx)}'"
 
     @mcp.tool()
     def delete_everything() -> str:
