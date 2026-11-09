@@ -29,6 +29,11 @@ through one authenticated URL. Clients don't connect to upstream servers directl
   which client is calling, and no session state is shared between clients. Sessions open on
   first use and close after 5 idle minutes; `/health` lists the open ones per server. The
   sample servers' `whoami` tool shows it.
+- **Instant catalog updates.** The gateway listens to each server's change stream
+  (`subscriptions/listen`). When tools, resources or prompts change, it re-lists that server
+  about 1s later. Servers that can't stream changes are re-listed every 30s. Clients can open
+  their own `subscriptions/listen` stream to the gateway, and each change is announced only
+  to clients whose key may use that server. A server going down or coming back counts as a change too.
 - **Tool filtering.** Each upstream has `_INCLUDE_TOOLS` / `_EXCLUDE_TOOLS` globs, so you
   can hide dangerous tools (for example `delete_*`).
 - **Resilience.** Each upstream has its own supervisor that health-checks the connection
