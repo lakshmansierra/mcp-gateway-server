@@ -42,6 +42,65 @@ through one authenticated URL. Clients don't connect to upstream servers directl
 - **Configured by environment variables.** Settings come from a `.env` file or the real environment.
 - **Transports.** HTTP for remote clients; stdio for local clients that launch the gateway as a subprocess.
 
+## How the catalog works
+
+The gateway keeps a **catalog** in memory: the tools, resources, resource templates and
+prompts of every connected server. List requests (`tools/list`, `resources/list`,
+`prompts/list`) are answered from the catalog. Calls (`tools/call`, `resources/read`,
+`prompts/get`) always go to the live server.
+
+```
+tools/list  → catalog in memory (re-fetched first if older than 30s) → reply
+tools/call  → the server that owns the tool, every time              → reply
+```
+
+**What the catalog is for**
+
+- **Fast lists.** A list comes from memory in about a millisecond, however many servers are behind the gateway.
+- **Routing.** The catalog tells the gateway which server owns a tool or a resource URI, and
+  whether include/exclude filters allow it, without asking the servers first.
+- **Change detection.** Each refresh compares the new catalog with the old one, so the gateway
+  knows what changed and can notify only the clients that are allowed to see it.
+- **Down servers.** When a server disconnects, its entries are removed once. Clients get a
+  clean list instead of each request waiting on a dead server.
+
+**Why lists don't ask every server on demand**
+
+If the gateway asked every server on each `tools/list`, it would work, but it would be slower and heavier:
+
+```
+on demand:  client → gateway ─┬→ server_1  50 ms ─┐
+                              ├→ server_2  80 ms  ├→ reply after 2 s (the slowest server)
+                              └→ server_4   2 s  ─┘
+catalog:    client → gateway → memory → reply in about 1 ms
+```
+
+- **The slowest server sets the speed.** Each list waits for every server, so one slow or
+  overloaded server slows the list for every client.
+- **Load grows with clients.** AI clients ask for lists often (on connect, on reconnect,
+  sometimes every turn). With 50 clients and 4 servers, each round sends 200 identical
+  requests to the servers. With the catalog, each server is asked about once per 30s,
+  however many clients there are.
+- **Failures cost every client.** A down server would make every list request wait for a timeout.
+
+**Why 30 seconds**
+
+Most updates don't wait for the timer. The catalog is refreshed when the gateway connects to a
+server, about 1s after a server announces a change, and when a server goes down or comes back.
+The 30s refresh is a backup for servers that change without announcing it. It is a trade-off:
+
+| Refresh interval | Effect |
+|---|---|
+| 0s (always ask) | always exact; slow lists and heavy load on servers |
+| **30s** | a silent change shows up within 30s; each server gets about 2 list requests per minute |
+| 5 min | very light load; a silent change can stay hidden for minutes |
+
+So at 30s:
+
+- servers that announce their changes are up to date within about 1s;
+- servers that don't are never more than 30s out of date;
+- server load stays the same however many clients connect.
+
 ## Quick start
 
 ```bash
