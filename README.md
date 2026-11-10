@@ -210,7 +210,6 @@ gateway/
   auth.py       API-key ASGI middleware + per-key upstream scoping
   app.py        Starlette app: /mcp + /health
 servers/
-  _server_auth.py           bearer-token check shared by the sample servers
   server_1/ server_2/ server_3/   sample MCP servers (ports 9001-9003)
 clients/
   client_1/                 plain MCP client using the admin key
