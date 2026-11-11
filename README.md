@@ -12,7 +12,7 @@ through one authenticated URL. Clients don't connect to upstream servers directl
         │   MCP Gateway    │  /mcp     Streamable HTTP endpoint
         │                  │  /health  upstream status (no auth)
         └──────────────────┘
-          │       │       │   Streamable HTTP or SSE, with per-upstream headers
+          │       │       │   Streamable HTTP or SSE
           ▼       ▼       ▼
        github   docs    crm  ...   (live MCP servers)
 ```
@@ -130,9 +130,22 @@ All settings are environment variables. The gateway loads them from `.env` (git-
 variables already set in the real environment take precedence. See
 [.env.example](.env.example) for a full example.
 
-**Gateway:** `GATEWAY_HOST` (default `0.0.0.0`), `GATEWAY_PORT` (`8080`), `GATEWAY_PATH` (`/mcp`),
-`GATEWAY_ALLOWED_HOSTS`, `GATEWAY_LOG_LEVEL` (`INFO`), `GATEWAY_AUTH_ENABLED` (`true`),
-`GATEWAY_RECONNECT_INITIAL_DELAY` (`1`), `GATEWAY_RECONNECT_MAX_DELAY` (`60`).
+**Gateway:** every `GATEWAY_*` variable is optional; `.env` wins, and a missing one falls back to the value in code.
+
+| variable | fallback | meaning |
+|---|---|---|
+| `GATEWAY_NAME`, `GATEWAY_VERSION` | `mcp-gateway`, `1.0.0` | name and version reported to clients and servers |
+| `GATEWAY_TRANSPORT` | `http` | `http` or `stdio`; the `--transport` flag overrides it |
+| `GATEWAY_HOST`, `GATEWAY_PORT`, `GATEWAY_PATH` | `127.0.0.1`, `8080`, `/mcp` | where the gateway listens |
+| `GATEWAY_ALLOWED_HOSTS` | empty (any) | hostnames for DNS-rebinding protection |
+| `GATEWAY_LOG_LEVEL` | `INFO` | log detail |
+| `GATEWAY_AUTH_ENABLED` | `true` | require API keys |
+| `GATEWAY_RECONNECT_INITIAL_DELAY`, `GATEWAY_RECONNECT_MAX_DELAY` | `1`, `60` | reconnect backoff (seconds) |
+| `GATEWAY_STARTUP_CONNECT_TIMEOUT` | `10` | seconds to wait for servers at startup |
+| `GATEWAY_HEALTH_CHECK_INTERVAL` | `30` | seconds between health checks / re-lists |
+| `GATEWAY_CATALOG_TTL` | `30` | seconds before a list request re-fetches the catalog |
+| `GATEWAY_CHANGE_DEBOUNCE` | `1` | seconds to wait after a change notification |
+| `GATEWAY_CLIENT_SESSION_IDLE` | `300` | seconds before an unused client session closes |
 
 **Client API keys:**
 
@@ -144,15 +157,16 @@ variables already set in the real environment take precedence. See
 **MCP servers.** `SERVER_<ID>` in lowercase becomes the server's name and tool prefix, so
 `SERVER_1_URL` gives tools named `server_1__...`.
 
-| variable | default | meaning |
+Every server needs all six of these; the code has no per-server defaults (they mirror the server table's columns).
+
+| variable | example | meaning |
 |---|---|---|
-| `SERVER_<ID>_URL` | required | The server's live MCP URL |
-| `SERVER_<ID>_TRANSPORT` | `streamable_http` | `streamable_http` or `sse` (legacy servers) |
-| `SERVER_<ID>_HEADER_<HEADER>` | | Header sent to the server; `_` becomes `-` (`X_API_KEY` → `X-API-KEY`) |
-| `SERVER_<ID>_TIMEOUT` | `60` | Per-request timeout in seconds |
-| `SERVER_<ID>_ENABLED` | `true` | Set to `false` to turn off without deleting |
-| `SERVER_<ID>_INCLUDE_TOOLS` | all | Comma-separated globs of tools to expose |
-| `SERVER_<ID>_EXCLUDE_TOOLS` | none | Comma-separated globs of tools to hide |
+| `SERVER_<ID>_URL` | `http://127.0.0.1:9001/mcp` | The server's live MCP URL |
+| `SERVER_<ID>_TRANSPORT` | `streamable_http` | `streamable_http` or `sse` (older servers) |
+| `SERVER_<ID>_TIMEOUT` | `60` | Seconds to wait for each reply |
+| `SERVER_<ID>_ENABLED` | `true` | `false` turns the server off without deleting it |
+| `SERVER_<ID>_INCLUDE_TOOLS` | `*` | Comma-separated globs of tools to expose |
+| `SERVER_<ID>_EXCLUDE_TOOLS` | `delete_*` | Comma-separated globs of tools to hide; may be empty |
 
 ## Connecting AI clients
 

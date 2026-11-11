@@ -23,8 +23,8 @@ def main() -> None:
     parser.add_argument(
         "--transport",
         choices=["http", "stdio"],
-        default="http",
-        help="http: serve Streamable HTTP for remote AI clients; stdio: run as a local subprocess server",
+        help="http: serve Streamable HTTP for remote AI clients; stdio: run as a local subprocess server "
+        "(default: GATEWAY_TRANSPORT from .env, else http)",
     )
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
@@ -36,6 +36,8 @@ def main() -> None:
         config.gateway.host = args.host
     if args.port:
         config.gateway.port = args.port
+    if args.transport:
+        config.gateway.transport = args.transport
 
     # Logs go to stderr so they never corrupt the stdio protocol stream.
     logging.basicConfig(
@@ -46,7 +48,7 @@ def main() -> None:
     # Per-request HTTP logs from the upstream client would repeat on every health check.
     logging.getLogger("httpx2").setLevel(logging.WARNING)
 
-    if args.transport == "stdio":
+    if config.gateway.transport == "stdio":
         from mcp.server.stdio import stdio_server
 
         from gateway.server import Gateway, build_server

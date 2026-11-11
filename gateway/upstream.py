@@ -7,11 +7,11 @@ the upstream goes away. That shared session is the gateway's own: it lists the c
 Client requests (tools/call, resources/read, ...) use a separate session per client key,
 opened on first use and sent with `X-MCP-Client: <key name>`, so the server sees which
 client is calling and no state is shared between clients. Idle client sessions close
-after CLIENT_SESSION_IDLE seconds; all of them close when the shared session drops.
+after GATEWAY_CLIENT_SESSION_IDLE seconds; all of them close when the shared session drops.
 
 Catalog freshness: the shared session also opens a `subscriptions/listen` stream, so a
-server that announces a change gets re-listed within CHANGE_DEBOUNCE seconds. Servers
-that can't stream changes are still re-listed every HEALTH_CHECK_INTERVAL seconds. Every
+server that announces a change gets re-listed within GATEWAY_CHANGE_DEBOUNCE seconds. Servers
+that can't stream changes are still re-listed every GATEWAY_HEALTH_CHECK_INTERVAL seconds. Every
 refresh compares the new catalog with the old one and reports what changed to `on_change`,
 which the gateway passes on to its own clients.
 """
@@ -39,10 +39,6 @@ from gateway.config import GatewaySettings, UpstreamConfig
 
 logger = logging.getLogger(__name__)
 
-HEALTH_CHECK_INTERVAL = 30.0
-CATALOG_TTL = 30.0
-CHANGE_DEBOUNCE = 1.0  # a burst of change events from one server becomes one refresh
-CLIENT_SESSION_IDLE = 300.0
 CLIENT_ID_HEADER = "X-MCP-Client"
 
 # Called with (server name, what changed) whenever a server's catalog changes.
@@ -122,10 +118,10 @@ class Upstream:
 
     def _transport(self, stack: AsyncExitStack, caller: str | None = None) -> Any:
         cfg = self.config
-        headers = {**cfg.headers, CLIENT_ID_HEADER: caller} if caller else cfg.headers
+        headers = {CLIENT_ID_HEADER: caller} if caller else None  # names the client this session calls for
         if cfg.transport == "sse":
-            return sse_client(cfg.url, headers=headers or None, timeout=cfg.timeout_seconds)
-        http_client = create_mcp_http_client(headers=headers or None)
+            return sse_client(cfg.url, headers=headers, timeout=cfg.timeout_seconds)
+        http_client = create_mcp_http_client(headers=headers)
         stack.push_async_callback(http_client.aclose)
         return streamable_http_client(cfg.url, http_client=http_client)
 
@@ -133,7 +129,7 @@ class Upstream:
         return Client(
             self._transport(stack, caller),
             read_timeout_seconds=self.config.timeout_seconds,
-            client_info=types.Implementation(name=self.settings.name, version="1.0.0"),
+            client_info=types.Implementation(name=self.settings.name, version=self.settings.version),
             cache=None,
         )
 
@@ -181,7 +177,7 @@ class Upstream:
     async def _monitor(self) -> None:
         """Return when the connection should be torn down."""
         while True:
-            with anyio.move_on_after(HEALTH_CHECK_INTERVAL):
+            with anyio.move_on_after(self.settings.health_check_interval):
                 await self._broken.wait()
                 self.last_error = "connection reported broken by a request"
                 return
@@ -198,9 +194,9 @@ class Upstream:
                 logger.info("Listening for changes from '%s'", self.name)
                 async for _ in subscription:
                     self._changed.set()
-            logger.info("'%s' closed its change stream; polling every %.0fs", self.name, HEALTH_CHECK_INTERVAL)
+            logger.info("'%s' closed its change stream; polling every %.0fs", self.name, self.settings.health_check_interval)
         except (ListenNotSupportedError, MCPError) as exc:
-            logger.info("'%s' can't stream changes (%s); polling every %.0fs", self.name, exc, HEALTH_CHECK_INTERVAL)
+            logger.info("'%s' can't stream changes (%s); polling every %.0fs", self.name, exc, self.settings.health_check_interval)
         except SubscriptionLost as exc:
             logger.warning("Change stream from '%s' dropped: %s", self.name, exc)
             self.mark_broken()  # reconnecting re-opens the stream
@@ -209,7 +205,7 @@ class Upstream:
         """Re-list once per burst of change events."""
         while True:
             await self._changed.wait()
-            await anyio.sleep(CHANGE_DEBOUNCE)  # events arriving meanwhile are folded into this refresh
+            await anyio.sleep(self.settings.change_debounce)  # events arriving meanwhile are folded into this refresh
             self._changed = anyio.Event()
             try:
                 with anyio.fail_after(self.config.timeout_seconds):
@@ -252,8 +248,8 @@ class Upstream:
                 session.client = client
                 session.ready.set()
                 logger.info("Opened session to '%s' for client '%s'", self.name, caller)
-                while (idle := time.monotonic() - session.last_used) < CLIENT_SESSION_IDLE:
-                    with anyio.move_on_after(CLIENT_SESSION_IDLE - idle):
+                while (idle := time.monotonic() - session.last_used) < self.settings.client_session_idle:
+                    with anyio.move_on_after(self.settings.client_session_idle - idle):
                         await session.closed.wait()
                         break
                 logger.info("Closed session to '%s' for client '%s'", self.name, caller)
@@ -277,10 +273,10 @@ class Upstream:
         return self.client
 
     async def refresh_catalog(self, force: bool = False) -> None:
-        if not force and time.monotonic() - self.catalog.fetched_at < CATALOG_TTL:
+        if not force and time.monotonic() - self.catalog.fetched_at < self.settings.catalog_ttl:
             return
         async with self._refresh_lock:
-            if not force and time.monotonic() - self.catalog.fetched_at < CATALOG_TTL:
+            if not force and time.monotonic() - self.catalog.fetched_at < self.settings.catalog_ttl:
                 return
             client = self.require_client()
             caps = client.server_capabilities

@@ -31,8 +31,6 @@ from gateway.upstream import Upstream, UpstreamPool, UpstreamUnavailableError
 
 logger = logging.getLogger(__name__)
 
-STARTUP_CONNECT_TIMEOUT = 10.0
-
 T = TypeVar("T")
 
 
@@ -166,10 +164,20 @@ class Gateway:
         if not upstream.config.tool_allowed(tool):
             raise MCPError(types.INVALID_PARAMS, f"Tool '{params.name}' is not exposed by this gateway")
         logger.info("tools/call %s -> %s.%s", _caller(ctx), upstream_name, tool)
+        # Down or slow servers come back as tool errors, not protocol errors, so an AI agent
+        # sees the reason and can retry or pick another tool instead of its whole run failing.
         try:
             return await self._forward(ctx, upstream, lambda c: c.call_tool(tool, params.arguments))
         except UpstreamUnavailableError as exc:
-            return types.CallToolResult(content=[types.TextContent(text=str(exc))], is_error=True)
+            return _tool_error(str(exc))
+        except MCPError as exc:
+            if exc.error.code != types.REQUEST_TIMEOUT:
+                raise
+            logger.warning("tools/call %s -> %s.%s timed out", _caller(ctx), upstream_name, tool)
+            return _tool_error(
+                f"'{params.name}' timed out: server '{upstream_name}' did not answer within "
+                f"{upstream.config.timeout_seconds:g}s"
+            )
 
     # ---- resources --------------------------------------------------------
 
@@ -257,6 +265,10 @@ class Gateway:
             raise MCPError(types.INTERNAL_ERROR, str(exc)) from exc
 
 
+def _tool_error(message: str) -> types.CallToolResult:
+    return types.CallToolResult(content=[types.TextContent(text=message)], is_error=True)
+
+
 def _client_id(ctx: ServerRequestContext[Any, Any]) -> str | None:
     """The calling client's identity (its API key name), or None when auth is off (stdio, GATEWAY_AUTH_ENABLED=false)."""
     key = api_key_from_request(ctx.request)
@@ -272,7 +284,7 @@ def build_server(gateway: Gateway) -> Server[Any]:
     async def lifespan(_: Server[Any]) -> AsyncIterator[dict[str, Any]]:
         async with anyio.create_task_group() as tg:
             tg.start_soon(gateway.pool.run)
-            await gateway.pool.wait_until_ready(STARTUP_CONNECT_TIMEOUT)
+            await gateway.pool.wait_until_ready(gateway.config.gateway.startup_connect_timeout)
             try:
                 yield {"gateway": gateway}
             finally:
@@ -281,7 +293,7 @@ def build_server(gateway: Gateway) -> Server[Any]:
     upstream_names = ", ".join(gateway.pool.upstreams) or "none"
     return Server(
         gateway.config.gateway.name,
-        version="1.0.0",
+        version=gateway.config.gateway.version,
         instructions=(
             "This gateway aggregates several MCP servers. Tool and prompt names are "
             f"prefixed with their server name and '{NAME_SEPARATOR}'. Connected servers: {upstream_names}."
