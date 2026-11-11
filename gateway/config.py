@@ -10,8 +10,8 @@ so the code holds no per-server defaults):
     SERVER_<ID>_TRANSPORT=streamable_http       or sse
     SERVER_<ID>_TIMEOUT=60                      seconds to wait for each reply
     SERVER_<ID>_ENABLED=true                    false = don't connect
-    SERVER_<ID>_INCLUDE_TOOLS=*                 comma-separated globs of tools to expose
-    SERVER_<ID>_EXCLUDE_TOOLS=delete_*          globs of tools to hide (may be empty)
+    SERVER_<ID>_INCLUDE_TOOLS=*                 full tool names to expose, comma-separated; * = all
+    SERVER_<ID>_EXCLUDE_TOOLS=delete_everything full tool names to hide from those (may be empty)
 
 SERVER_<ID> lowercased is the server's name and tool prefix, e.g. SERVER_1_URL -> "server_1" -> server_1__add.
 """
@@ -25,11 +25,12 @@ from collections.abc import Mapping
 from fnmatch import fnmatch
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 logger = logging.getLogger(__name__)
 
 NAME_SEPARATOR = "__"
+ALL_TOOLS = "*"  # in _INCLUDE_TOOLS: expose every tool
 
 SERVER_PREFIX = "SERVER_"
 API_KEY_PREFIX = "API_KEY_"
@@ -75,7 +76,8 @@ class UpstreamConfig(BaseModel):
     transport: Literal["streamable_http", "sse"]
     enabled: bool
     timeout_seconds: float = Field(gt=0)
-    # Glob patterns on the upstream's own tool names (before prefixing).
+    # Full tool names as the server names them (before prefixing), e.g. "add", not "server_1__add".
+    # include_tools may be just "*" for every tool; no other wildcards are accepted.
     include_tools: list[str]
     exclude_tools: list[str]
 
@@ -88,10 +90,20 @@ class UpstreamConfig(BaseModel):
             raise ValueError(f"upstream name must not contain '{NAME_SEPARATOR}'")
         return v
 
+    @field_validator("include_tools", "exclude_tools")
+    @classmethod
+    def _full_names(cls, v: list[str], info: ValidationInfo) -> list[str]:
+        allowed = {ALL_TOOLS} if info.field_name == "include_tools" else set()
+        partial = [t for t in v if t not in allowed and any(c in t for c in "*?[]")]
+        if partial:
+            hint = " ('*' alone means all tools)" if allowed else ""
+            raise ValueError(f"use full tool names, not patterns: {partial}{hint}")
+        return v
+
     def tool_allowed(self, tool_name: str) -> bool:
-        if any(fnmatch(tool_name, p) for p in self.exclude_tools):
+        if tool_name in self.exclude_tools:
             return False
-        return any(fnmatch(tool_name, p) for p in self.include_tools)
+        return ALL_TOOLS in self.include_tools or tool_name in self.include_tools
 
 
 class ApiKeyConfig(BaseModel):

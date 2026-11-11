@@ -34,8 +34,8 @@ through one authenticated URL. Clients don't connect to upstream servers directl
   about 1s later. Servers that can't stream changes are re-listed every 30s. Clients can open
   their own `subscriptions/listen` stream to the gateway, and each change is announced only
   to clients whose key may use that server. A server going down or coming back counts as a change too.
-- **Tool filtering.** Each upstream has `_INCLUDE_TOOLS` / `_EXCLUDE_TOOLS` globs, so you
-  can hide dangerous tools (for example `delete_*`).
+- **Tool filtering.** Each upstream has `_INCLUDE_TOOLS` / `_EXCLUDE_TOOLS` lists of full tool
+  names, so you can hide dangerous tools (for example `delete_everything`).
 - **Resilience.** Each upstream has its own supervisor that health-checks the connection
   every 30s and reconnects with exponential backoff. If one upstream is down, the
   others keep working, and calls to the down server get a clear error.
@@ -165,8 +165,8 @@ Every server needs all six of these; the code has no per-server defaults (they m
 | `SERVER_<ID>_TRANSPORT` | `streamable_http` | `streamable_http` or `sse` (older servers) |
 | `SERVER_<ID>_TIMEOUT` | `60` | Seconds to wait for each reply |
 | `SERVER_<ID>_ENABLED` | `true` | `false` turns the server off without deleting it |
-| `SERVER_<ID>_INCLUDE_TOOLS` | `*` | Comma-separated globs of tools to expose |
-| `SERVER_<ID>_EXCLUDE_TOOLS` | `delete_*` | Comma-separated globs of tools to hide; may be empty |
+| `SERVER_<ID>_INCLUDE_TOOLS` | `*` | Full tool names to expose, comma-separated; `*` = all tools |
+| `SERVER_<ID>_EXCLUDE_TOOLS` | `delete_everything` | Full tool names to remove from the included ones; may be empty |
 
 ## Connecting AI clients
 
