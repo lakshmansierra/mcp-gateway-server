@@ -3,9 +3,15 @@
     GATEWAY_HOST, GATEWAY_PORT, ...           gateway settings
     API_KEY_<NAME>=<secret>                     a client API key for every server
     API_KEY_<NAME>_SERVERS=server_1,server_2    restrict that key to some MCP servers
-    SERVER_<ID>_URL=https://...                 an MCP server behind the gateway
-    SERVER_<ID>_HEADER_<HEADER>=value           a header sent to it (`_` in <HEADER> becomes `-`)
-    SERVER_<ID>_HEADER_AUTHORIZATION=<token>    sent as "Authorization: Bearer <token>"
+
+Every MCP server behind the gateway needs all of these (they mirror the server table's columns,
+so the code holds no per-server defaults):
+    SERVER_<ID>_URL=https://...                 where the server is
+    SERVER_<ID>_TRANSPORT=streamable_http       or sse
+    SERVER_<ID>_TIMEOUT=60                      seconds to wait for each reply
+    SERVER_<ID>_ENABLED=true                    false = don't connect
+    SERVER_<ID>_INCLUDE_TOOLS=*                 comma-separated globs of tools to expose
+    SERVER_<ID>_EXCLUDE_TOOLS=delete_*          globs of tools to hide (may be empty)
 
 SERVER_<ID> lowercased is the server's name and tool prefix, e.g. SERVER_1_URL -> "server_1" -> server_1__add.
 """
@@ -36,7 +42,6 @@ UPSTREAM_FIELDS = {
     "_TIMEOUT": "timeout_seconds",
     "_URL": "url",
 }
-HEADER_MARKER = "_HEADER_"
 LIST_FIELDS = {"include_tools", "exclude_tools", "allowed_hosts"}
 GATEWAY_FIELDS = {
     "GATEWAY_NAME": "name",
@@ -47,15 +52,14 @@ GATEWAY_FIELDS = {
     "GATEWAY_RECONNECT_INITIAL_DELAY": "reconnect_initial_delay",
     "GATEWAY_RECONNECT_MAX_DELAY": "reconnect_max_delay",
     "GATEWAY_LOG_LEVEL": "log_level",
+    "GATEWAY_VERSION": "version",
+    "GATEWAY_TRANSPORT": "transport",
+    "GATEWAY_STARTUP_CONNECT_TIMEOUT": "startup_connect_timeout",
+    "GATEWAY_HEALTH_CHECK_INTERVAL": "health_check_interval",
+    "GATEWAY_CATALOG_TTL": "catalog_ttl",
+    "GATEWAY_CHANGE_DEBOUNCE": "change_debounce",
+    "GATEWAY_CLIENT_SESSION_IDLE": "client_session_idle",
 }
-
-
-def _header_value(header: str, value: str) -> str:
-    """A bare token in an Authorization header becomes 'Bearer <token>'; values with a scheme ('Basic ...') are kept."""
-    value = value.strip()
-    if header.upper() == "AUTHORIZATION" and " " not in value:
-        return f"Bearer {value}"
-    return value
 
 
 def _split_list(value: str) -> list[str]:
@@ -65,15 +69,15 @@ def _split_list(value: str) -> list[str]:
 class UpstreamConfig(BaseModel):
     """One live MCP server that the gateway proxies to."""
 
+    # All required: each comes from SERVER_<ID>_<SETTING> in .env (later, a row in the server table).
     name: str
     url: str
-    transport: Literal["streamable_http", "sse"] = "streamable_http"
-    headers: dict[str, str] = Field(default_factory=dict)
-    enabled: bool = True
-    timeout_seconds: float = 60.0
+    transport: Literal["streamable_http", "sse"]
+    enabled: bool
+    timeout_seconds: float = Field(gt=0)
     # Glob patterns on the upstream's own tool names (before prefixing).
-    include_tools: list[str] = Field(default_factory=lambda: ["*"])
-    exclude_tools: list[str] = Field(default_factory=list)
+    include_tools: list[str]
+    exclude_tools: list[str]
 
     @field_validator("name")
     @classmethod
@@ -102,19 +106,33 @@ class ApiKeyConfig(BaseModel):
 
 
 class GatewaySettings(BaseModel):
+    """Gateway-wide settings. Each reads GATEWAY_<NAME> from .env; the value here is only the fallback."""
+
     name: str = "mcp-gateway"
+    version: str = "1.0.0"  # reported to clients and to servers
+    transport: Literal["http", "stdio"] = "http"  # the --transport flag overrides it
     host: str = "127.0.0.1"
     port: int = 8080
     path: str = "/mcp"
     # Hostnames clients use to reach the gateway (DNS-rebinding protection). Empty = allow any.
     allowed_hosts: list[str] = Field(default_factory=list)
-    reconnect_initial_delay: float = 1.0
-    reconnect_max_delay: float = 60.0
+    reconnect_initial_delay: float = Field(1.0, gt=0)
+    reconnect_max_delay: float = Field(60.0, gt=0)
     log_level: str = "INFO"
+    # Seconds. At startup, how long to wait for servers before accepting clients.
+    startup_connect_timeout: float = Field(10.0, ge=0)
+    # Seconds. How often each server is health-checked (and re-listed, if it can't stream changes).
+    health_check_interval: float = Field(30.0, gt=0)
+    # Seconds. How old the catalog may get before a list request re-fetches it.
+    catalog_ttl: float = Field(30.0, ge=0)
+    # Seconds. Wait after a change notification so a burst of changes becomes one refresh.
+    change_debounce: float = Field(1.0, ge=0)
+    # Seconds. A client's own session to a server closes after this long unused.
+    client_session_idle: float = Field(300.0, gt=0)
 
 
 class AuthSettings(BaseModel):
-    enabled: bool = True
+    enabled: bool = True  # GATEWAY_AUTH_ENABLED; this is only the fallback
     api_keys: list[ApiKeyConfig] = Field(default_factory=list)
 
     @field_validator("api_keys")
@@ -152,11 +170,6 @@ def _parse_upstreams(env: Mapping[str, str]) -> list[dict[str, Any]]:
     for var, value in env.items():
         if not var.startswith(SERVER_PREFIX):
             continue
-        if HEADER_MARKER in var:
-            server, header = var.split(HEADER_MARKER, 1)
-            entry = upstreams.setdefault(server.lower(), {"name": server.lower()})
-            entry.setdefault("headers", {})[header.replace("_", "-")] = _header_value(header, value)
-            continue
         for suffix, field_name in UPSTREAM_FIELDS.items():
             if var.endswith(suffix) and len(var) > len(SERVER_PREFIX) + len(suffix):
                 name = var[: -len(suffix)].lower()
@@ -165,11 +178,16 @@ def _parse_upstreams(env: Mapping[str, str]) -> list[dict[str, Any]]:
                 break
         else:
             # Other software may set SERVER_* variables (e.g. SERVER_NAME), so skip rather than fail.
-            logger.warning("Ignoring '%s': expected SERVER_<ID>_URL, _TRANSPORT, _HEADER_<X>, ...", var)
+            logger.warning("Ignoring '%s': expected SERVER_<ID>_URL, _TRANSPORT, _TIMEOUT, ...", var)
 
-    missing = sorted(name for name, entry in upstreams.items() if "url" not in entry)
+    missing = [
+        f"{name.upper()}{suffix}"
+        for name, entry in sorted(upstreams.items())
+        for suffix, field_name in UPSTREAM_FIELDS.items()
+        if field_name not in entry
+    ]
     if missing:
-        raise ValueError(f"Server(s) {missing} have settings but no SERVER_<ID>_URL")
+        raise ValueError(f"Missing server settings in .env: {', '.join(missing)}")
     return sorted(upstreams.values(), key=lambda u: u["name"])
 
 

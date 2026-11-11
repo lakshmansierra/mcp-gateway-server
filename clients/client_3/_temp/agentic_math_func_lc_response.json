@@ -12,7 +12,7 @@
             "kwargs": {
                 "content": "{\n  \"instructions\": \"\\nYou have access to math tools.\\nCall only the appropriate tools needed as much it is needed, don't unwantedly call unwanted tools\\njust let the tools do the work, your job is just to select the tools and not to answer on your own, If no tools are needed, dont use any and also dont answer on your own for the prompt\\n\\nTask:\\n1. Multiply the output of sum of 1 and 3 with the greatest number among inputs of 1 and 3\\n\\nUse tools when needed.\\nReturn only the final number.\\n\"\n}",
                 "type": "human",
-                "id": "f46fbc7a-8c8b-4091-a056-961731f750a0"
+                "id": "479de5d6-a5b9-4845-9c80-e20e4d932a9f"
             }
         },
         {
@@ -49,26 +49,26 @@
                             "text_tokens": null
                         },
                         "latency_checkpoint": {
-                            "engine_tbt_ms": 4,
-                            "engine_ttft_ms": 30,
-                            "engine_ttlt_ms": 122,
-                            "pre_inference_ms": 88,
-                            "service_tbt_ms": 4,
-                            "service_ttft_ms": 280,
-                            "service_ttlt_ms": 367,
-                            "user_visible_ttft_ms": 192
+                            "engine_tbt_ms": 1,
+                            "engine_ttft_ms": 312,
+                            "engine_ttlt_ms": 341,
+                            "pre_inference_ms": 147,
+                            "service_tbt_ms": 2,
+                            "service_ttft_ms": 629,
+                            "service_ttlt_ms": 662,
+                            "user_visible_ttft_ms": 482
                         }
                     },
                     "model_provider": "openai",
                     "model_name": "gpt-4.1-2025-04-14",
-                    "system_fingerprint": "fp_1c049b0446",
-                    "id": "chatcmpl-EiId6ZIpP6JcnAf8D0WHuQot2G7f7",
+                    "system_fingerprint": "fp_8c4c3e6d7a",
+                    "id": "chatcmpl-Ej2uWh2rV0Dd5m3JU3GyGtV6IRS7X",
                     "service_tier": "default",
                     "finish_reason": "tool_calls",
                     "logprobs": null
                 },
                 "type": "ai",
-                "id": "lc_run--01a1c03f-8310-72f7-9b33-66626ba303a8-0",
+                "id": "lc_run--01a1cada-1a12-70c7-946f-1c10c0a26174-0",
                 "tool_calls": [
                     {
                         "name": "server_1__add",
@@ -76,7 +76,7 @@
                             "a": 1,
                             "b": 3
                         },
-                        "id": "call_h7WAYGPzPyNW1f71r1NbhIUn",
+                        "id": "call_KCZbIiTNvPZFHAV3JTtLHtQe",
                         "type": "tool_call"
                     }
                 ],
@@ -109,8 +109,8 @@
                 "content": "4",
                 "type": "tool",
                 "name": "server_1__add",
-                "id": "a9a1e28c-3541-46d6-8601-4ee64f216e35",
-                "tool_call_id": "call_h7WAYGPzPyNW1f71r1NbhIUn",
+                "id": "95b90cb9-851a-4d0c-938a-a6dbd030c5e7",
+                "tool_call_id": "call_KCZbIiTNvPZFHAV3JTtLHtQe",
                 "status": "success"
             }
         },
@@ -148,26 +148,26 @@
                             "text_tokens": null
                         },
                         "latency_checkpoint": {
-                            "engine_tbt_ms": 3,
-                            "engine_ttft_ms": 63,
-                            "engine_ttlt_ms": 135,
-                            "pre_inference_ms": 123,
-                            "service_tbt_ms": 3,
-                            "service_ttft_ms": 355,
-                            "service_ttlt_ms": 412,
-                            "user_visible_ttft_ms": 232
+                            "engine_tbt_ms": 0,
+                            "engine_ttft_ms": 325,
+                            "engine_ttlt_ms": 328,
+                            "pre_inference_ms": 149,
+                            "service_tbt_ms": 2,
+                            "service_ttft_ms": 638,
+                            "service_ttlt_ms": 673,
+                            "user_visible_ttft_ms": 489
                         }
                     },
                     "model_provider": "openai",
                     "model_name": "gpt-4.1-2025-04-14",
-                    "system_fingerprint": "fp_1c049b0446",
-                    "id": "chatcmpl-EiId7pl7cnZ90CtRengTS3Bw2EI2Y",
+                    "system_fingerprint": "fp_8c4c3e6d7a",
+                    "id": "chatcmpl-Ej2uXibYeJFLMtqdJZbASxhywxvoq",
                     "service_tier": "default",
                     "finish_reason": "tool_calls",
                     "logprobs": null
                 },
                 "type": "ai",
-                "id": "lc_run--01a1c03f-8c51-7301-8b5e-9b2ff6286d7a-0",
+                "id": "lc_run--01a1cada-245c-7088-be5f-357165fce522-0",
                 "tool_calls": [
                     {
                         "name": "server_1__multiply",
@@ -175,7 +175,7 @@
                             "a": 4,
                             "b": 3
                         },
-                        "id": "call_BSKl244qQIyuzIPArdWi0YU7",
+                        "id": "call_rx3ukcU4iesKIkbzJ6r2O1En",
                         "type": "tool_call"
                     }
                 ],
@@ -208,8 +208,8 @@
                 "content": "12",
                 "type": "tool",
                 "name": "server_1__multiply",
-                "id": "0afe1ac6-6fa6-43ea-a1f4-677e63a3df94",
-                "tool_call_id": "call_BSKl244qQIyuzIPArdWi0YU7",
+                "id": "d6fa5402-d7ac-4f8a-8fbb-30275f8fd907",
+                "tool_call_id": "call_rx3ukcU4iesKIkbzJ6r2O1En",
                 "status": "success"
             }
         },
@@ -247,26 +247,25 @@
                             "text_tokens": null
                         },
                         "latency_checkpoint": {
-                            "engine_tbt_ms": 6,
-                            "engine_ttft_ms": 51,
-                            "engine_ttlt_ms": 68,
-                            "pre_inference_ms": 383,
-                            "service_tbt_ms": 6,
-                            "service_ttft_ms": 597,
-                            "service_ttlt_ms": 609,
-                            "user_visible_ttft_ms": 214
+                            "engine_ttft_ms": 329,
+                            "engine_ttlt_ms": 329,
+                            "pre_inference_ms": 131,
+                            "service_tbt_ms": 9,
+                            "service_ttft_ms": 610,
+                            "service_ttlt_ms": 628,
+                            "user_visible_ttft_ms": 479
                         }
                     },
                     "model_provider": "openai",
                     "model_name": "gpt-4.1-2025-04-14",
-                    "system_fingerprint": "fp_1c049b0446",
-                    "id": "chatcmpl-EiId8Ko8DPo7TyfB7nk8ctpRX0uBP",
+                    "system_fingerprint": "fp_8c4c3e6d7a",
+                    "id": "chatcmpl-Ej2uYIvvSqKQpKeGSgMEgAocgxBi4",
                     "service_tier": "default",
                     "finish_reason": "stop",
                     "logprobs": null
                 },
                 "type": "ai",
-                "id": "lc_run--01a1c03f-90b6-7072-8a19-83193c242d18-0",
+                "id": "lc_run--01a1cada-2a20-7786-9222-a8ffb84e51cf-0",
                 "usage_metadata": {
                     "input_tokens": 573,
                     "output_tokens": 2,

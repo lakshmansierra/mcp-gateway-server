@@ -7,13 +7,20 @@ the upstream goes away. That shared session is the gateway's own: it lists the c
 Client requests (tools/call, resources/read, ...) use a separate session per client key,
 opened on first use and sent with `X-MCP-Client: <key name>`, so the server sees which
 client is calling and no state is shared between clients. Idle client sessions close
-after CLIENT_SESSION_IDLE seconds; all of them close when the shared session drops.
+after GATEWAY_CLIENT_SESSION_IDLE seconds; all of them close when the shared session drops.
+
+Catalog freshness: the shared session also opens a `subscriptions/listen` stream, so a
+server that announces a change gets re-listed within GATEWAY_CHANGE_DEBOUNCE seconds. Servers
+that can't stream changes are still re-listed every GATEWAY_HEALTH_CHECK_INTERVAL seconds. Every
+refresh compares the new catalog with the old one and reports what changed to `on_change`,
+which the gateway passes on to its own clients.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
@@ -23,16 +30,19 @@ import mcp_types as types
 from mcp.client import Client
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
+from mcp.client.subscriptions import ListenNotSupportedError, SubscriptionLost
 from mcp.shared._httpx_utils import create_mcp_http_client
+from mcp.shared.exceptions import MCPError
+from mcp.shared.subscriptions import PromptsListChanged, ResourcesListChanged, ServerEvent, ToolsListChanged
 
 from gateway.config import GatewaySettings, UpstreamConfig
 
 logger = logging.getLogger(__name__)
 
-HEALTH_CHECK_INTERVAL = 30.0
-CATALOG_TTL = 30.0
-CLIENT_SESSION_IDLE = 300.0
 CLIENT_ID_HEADER = "X-MCP-Client"
+
+# Called with (server name, what changed) whenever a server's catalog changes.
+OnChange = Callable[[str, list[ServerEvent]], None]
 
 
 class UpstreamUnavailableError(RuntimeError):
@@ -48,6 +58,17 @@ class Catalog:
     resource_templates: list[types.ResourceTemplate] = field(default_factory=list)
     prompts: list[types.Prompt] = field(default_factory=list)
     fetched_at: float = 0.0
+
+    def changes_from(self, old: Catalog) -> list[ServerEvent]:
+        """Which lists differ from `old`, as the events clients listen for."""
+        changes: list[ServerEvent] = []
+        if self.tools != old.tools:
+            changes.append(ToolsListChanged())
+        if (self.resources, self.resource_templates) != (old.resources, old.resource_templates):
+            changes.append(ResourcesListChanged())
+        if self.prompts != old.prompts:
+            changes.append(PromptsListChanged())
+        return changes
 
 
 @dataclass
@@ -74,13 +95,15 @@ async def _collect(fetch: Any, attr: str) -> list[Any]:
 
 
 class Upstream:
-    def __init__(self, config: UpstreamConfig, settings: GatewaySettings) -> None:
+    def __init__(self, config: UpstreamConfig, settings: GatewaySettings, on_change: OnChange | None = None) -> None:
         self.config = config
         self.settings = settings
         self.client: Client | None = None
         self.catalog = Catalog()
         self.last_error: str | None = None
+        self._on_change = on_change
         self._broken = anyio.Event()
+        self._changed = anyio.Event()
         self._refresh_lock = anyio.Lock()
         self._sessions: dict[str, ClientSession] = {}
         self._session_tg: anyio.abc.TaskGroup | None = None
@@ -95,10 +118,10 @@ class Upstream:
 
     def _transport(self, stack: AsyncExitStack, caller: str | None = None) -> Any:
         cfg = self.config
-        headers = {**cfg.headers, CLIENT_ID_HEADER: caller} if caller else cfg.headers
+        headers = {CLIENT_ID_HEADER: caller} if caller else None  # names the client this session calls for
         if cfg.transport == "sse":
-            return sse_client(cfg.url, headers=headers or None, timeout=cfg.timeout_seconds)
-        http_client = create_mcp_http_client(headers=headers or None)
+            return sse_client(cfg.url, headers=headers, timeout=cfg.timeout_seconds)
+        http_client = create_mcp_http_client(headers=headers)
         stack.push_async_callback(http_client.aclose)
         return streamable_http_client(cfg.url, http_client=http_client)
 
@@ -106,7 +129,7 @@ class Upstream:
         return Client(
             self._transport(stack, caller),
             read_timeout_seconds=self.config.timeout_seconds,
-            client_info=types.Implementation(name=self.settings.name, version="1.0.0"),
+            client_info=types.Implementation(name=self.settings.name, version=self.settings.version),
             cache=None,
         )
 
@@ -129,8 +152,11 @@ class Upstream:
                         len(self.catalog.resources),
                         len(self.catalog.prompts),
                     )
-                    async with anyio.create_task_group() as tg:  # hosts the per-client sessions
+                    async with anyio.create_task_group() as tg:  # hosts the per-client sessions and change listener
                         self._session_tg = tg
+                        self._changed = anyio.Event()
+                        tg.start_soon(self._listen, client)
+                        tg.start_soon(self._apply_changes)
                         await self._monitor()
                         tg.cancel_scope.cancel()
             except anyio.get_cancelled_exc_class():
@@ -142,6 +168,7 @@ class Upstream:
                 self.client = None
                 self._session_tg = None
                 self._broken = anyio.Event()
+                self._set_catalog(Catalog())  # its items are gone from every list until it reconnects
 
             logger.info("Reconnecting to '%s' in %.1fs", self.name, delay)
             await anyio.sleep(delay)
@@ -150,13 +177,42 @@ class Upstream:
     async def _monitor(self) -> None:
         """Return when the connection should be torn down."""
         while True:
-            with anyio.move_on_after(HEALTH_CHECK_INTERVAL):
+            with anyio.move_on_after(self.settings.health_check_interval):
                 await self._broken.wait()
                 self.last_error = "connection reported broken by a request"
                 return
             # Re-listing doubles as a liveness probe (ping is gone in 2026-07-28) and keeps the catalog fresh.
             with anyio.fail_after(self.config.timeout_seconds):
                 await self.refresh_catalog(force=True)
+
+    async def _listen(self, client: Client) -> None:
+        """Flag a refresh whenever the server reports a change, instead of waiting for the next poll."""
+        try:
+            async with client.listen(
+                tools_list_changed=True, prompts_list_changed=True, resources_list_changed=True
+            ) as subscription:
+                logger.info("Listening for changes from '%s'", self.name)
+                async for _ in subscription:
+                    self._changed.set()
+            logger.info("'%s' closed its change stream; polling every %.0fs", self.name, self.settings.health_check_interval)
+        except (ListenNotSupportedError, MCPError) as exc:
+            logger.info("'%s' can't stream changes (%s); polling every %.0fs", self.name, exc, self.settings.health_check_interval)
+        except SubscriptionLost as exc:
+            logger.warning("Change stream from '%s' dropped: %s", self.name, exc)
+            self.mark_broken()  # reconnecting re-opens the stream
+
+    async def _apply_changes(self) -> None:
+        """Re-list once per burst of change events."""
+        while True:
+            await self._changed.wait()
+            await anyio.sleep(self.settings.change_debounce)  # events arriving meanwhile are folded into this refresh
+            self._changed = anyio.Event()
+            try:
+                with anyio.fail_after(self.config.timeout_seconds):
+                    await self.refresh_catalog(force=True)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Refresh of '%s' after a change failed: %s", self.name, exc)
+                self.mark_broken()
 
     def mark_broken(self) -> None:
         self._broken.set()
@@ -192,8 +248,8 @@ class Upstream:
                 session.client = client
                 session.ready.set()
                 logger.info("Opened session to '%s' for client '%s'", self.name, caller)
-                while (idle := time.monotonic() - session.last_used) < CLIENT_SESSION_IDLE:
-                    with anyio.move_on_after(CLIENT_SESSION_IDLE - idle):
+                while (idle := time.monotonic() - session.last_used) < self.settings.client_session_idle:
+                    with anyio.move_on_after(self.settings.client_session_idle - idle):
                         await session.closed.wait()
                         break
                 logger.info("Closed session to '%s' for client '%s'", self.name, caller)
@@ -217,10 +273,10 @@ class Upstream:
         return self.client
 
     async def refresh_catalog(self, force: bool = False) -> None:
-        if not force and time.monotonic() - self.catalog.fetched_at < CATALOG_TTL:
+        if not force and time.monotonic() - self.catalog.fetched_at < self.settings.catalog_ttl:
             return
         async with self._refresh_lock:
-            if not force and time.monotonic() - self.catalog.fetched_at < CATALOG_TTL:
+            if not force and time.monotonic() - self.catalog.fetched_at < self.settings.catalog_ttl:
                 return
             client = self.require_client()
             caps = client.server_capabilities
@@ -233,7 +289,14 @@ class Upstream:
                 catalog.resource_templates = await _collect(client.list_resource_templates, "resource_templates")
             if caps.prompts is not None:
                 catalog.prompts = await _collect(client.list_prompts, "prompts")
-            self.catalog = catalog
+            self._set_catalog(catalog)
+
+    def _set_catalog(self, catalog: Catalog) -> None:
+        changes = catalog.changes_from(self.catalog)
+        self.catalog = catalog
+        if changes and self._on_change is not None:
+            logger.info("'%s' changed: %s", self.name, ", ".join(type(c).__name__ for c in changes))
+            self._on_change(self.name, changes)
 
     def status(self) -> dict[str, Any]:
         return {
@@ -257,8 +320,10 @@ def _describe(exc: BaseException) -> str:
 
 
 class UpstreamPool:
-    def __init__(self, configs: list[UpstreamConfig], settings: GatewaySettings) -> None:
-        self.upstreams: dict[str, Upstream] = {c.name: Upstream(c, settings) for c in configs}
+    def __init__(
+        self, configs: list[UpstreamConfig], settings: GatewaySettings, on_change: OnChange | None = None
+    ) -> None:
+        self.upstreams: dict[str, Upstream] = {c.name: Upstream(c, settings, on_change) for c in configs}
 
     async def run(self) -> None:
         async with anyio.create_task_group() as tg:

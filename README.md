@@ -12,7 +12,7 @@ through one authenticated URL. Clients don't connect to upstream servers directl
         │   MCP Gateway    │  /mcp     Streamable HTTP endpoint
         │                  │  /health  upstream status (no auth)
         └──────────────────┘
-          │       │       │   Streamable HTTP or SSE, with per-upstream headers
+          │       │       │   Streamable HTTP or SSE
           ▼       ▼       ▼
        github   docs    crm  ...   (live MCP servers)
 ```
@@ -29,6 +29,11 @@ through one authenticated URL. Clients don't connect to upstream servers directl
   which client is calling, and no session state is shared between clients. Sessions open on
   first use and close after 5 idle minutes; `/health` lists the open ones per server. The
   sample servers' `whoami` tool shows it.
+- **Instant catalog updates.** The gateway listens to each server's change stream
+  (`subscriptions/listen`). When tools, resources or prompts change, it re-lists that server
+  about 1s later. Servers that can't stream changes are re-listed every 30s. Clients can open
+  their own `subscriptions/listen` stream to the gateway, and each change is announced only
+  to clients whose key may use that server. A server going down or coming back counts as a change too.
 - **Tool filtering.** Each upstream has `_INCLUDE_TOOLS` / `_EXCLUDE_TOOLS` globs, so you
   can hide dangerous tools (for example `delete_*`).
 - **Resilience.** Each upstream has its own supervisor that health-checks the connection
@@ -36,6 +41,65 @@ through one authenticated URL. Clients don't connect to upstream servers directl
   others keep working, and calls to the down server get a clear error.
 - **Configured by environment variables.** Settings come from a `.env` file or the real environment.
 - **Transports.** HTTP for remote clients; stdio for local clients that launch the gateway as a subprocess.
+
+## How the catalog works
+
+The gateway keeps a **catalog** in memory: the tools, resources, resource templates and
+prompts of every connected server. List requests (`tools/list`, `resources/list`,
+`prompts/list`) are answered from the catalog. Calls (`tools/call`, `resources/read`,
+`prompts/get`) always go to the live server.
+
+```
+tools/list  → catalog in memory (re-fetched first if older than 30s) → reply
+tools/call  → the server that owns the tool, every time              → reply
+```
+
+**What the catalog is for**
+
+- **Fast lists.** A list comes from memory in about a millisecond, however many servers are behind the gateway.
+- **Routing.** The catalog tells the gateway which server owns a tool or a resource URI, and
+  whether include/exclude filters allow it, without asking the servers first.
+- **Change detection.** Each refresh compares the new catalog with the old one, so the gateway
+  knows what changed and can notify only the clients that are allowed to see it.
+- **Down servers.** When a server disconnects, its entries are removed once. Clients get a
+  clean list instead of each request waiting on a dead server.
+
+**Why lists don't ask every server on demand**
+
+If the gateway asked every server on each `tools/list`, it would work, but it would be slower and heavier:
+
+```
+on demand:  client → gateway ─┬→ server_1  50 ms ─┐
+                              ├→ server_2  80 ms  ├→ reply after 2 s (the slowest server)
+                              └→ server_4   2 s  ─┘
+catalog:    client → gateway → memory → reply in about 1 ms
+```
+
+- **The slowest server sets the speed.** Each list waits for every server, so one slow or
+  overloaded server slows the list for every client.
+- **Load grows with clients.** AI clients ask for lists often (on connect, on reconnect,
+  sometimes every turn). With 50 clients and 4 servers, each round sends 200 identical
+  requests to the servers. With the catalog, each server is asked about once per 30s,
+  however many clients there are.
+- **Failures cost every client.** A down server would make every list request wait for a timeout.
+
+**Why 30 seconds**
+
+Most updates don't wait for the timer. The catalog is refreshed when the gateway connects to a
+server, about 1s after a server announces a change, and when a server goes down or comes back.
+The 30s refresh is a backup for servers that change without announcing it. It is a trade-off:
+
+| Refresh interval | Effect |
+|---|---|
+| 0s (always ask) | always exact; slow lists and heavy load on servers |
+| **30s** | a silent change shows up within 30s; each server gets about 2 list requests per minute |
+| 5 min | very light load; a silent change can stay hidden for minutes |
+
+So at 30s:
+
+- servers that announce their changes are up to date within about 1s;
+- servers that don't are never more than 30s out of date;
+- server load stays the same however many clients connect.
 
 ## Quick start
 
@@ -66,9 +130,22 @@ All settings are environment variables. The gateway loads them from `.env` (git-
 variables already set in the real environment take precedence. See
 [.env.example](.env.example) for a full example.
 
-**Gateway:** `GATEWAY_HOST` (default `0.0.0.0`), `GATEWAY_PORT` (`8080`), `GATEWAY_PATH` (`/mcp`),
-`GATEWAY_ALLOWED_HOSTS`, `GATEWAY_LOG_LEVEL` (`INFO`), `GATEWAY_AUTH_ENABLED` (`true`),
-`GATEWAY_RECONNECT_INITIAL_DELAY` (`1`), `GATEWAY_RECONNECT_MAX_DELAY` (`60`).
+**Gateway:** every `GATEWAY_*` variable is optional; `.env` wins, and a missing one falls back to the value in code.
+
+| variable | fallback | meaning |
+|---|---|---|
+| `GATEWAY_NAME`, `GATEWAY_VERSION` | `mcp-gateway`, `1.0.0` | name and version reported to clients and servers |
+| `GATEWAY_TRANSPORT` | `http` | `http` or `stdio`; the `--transport` flag overrides it |
+| `GATEWAY_HOST`, `GATEWAY_PORT`, `GATEWAY_PATH` | `127.0.0.1`, `8080`, `/mcp` | where the gateway listens |
+| `GATEWAY_ALLOWED_HOSTS` | empty (any) | hostnames for DNS-rebinding protection |
+| `GATEWAY_LOG_LEVEL` | `INFO` | log detail |
+| `GATEWAY_AUTH_ENABLED` | `true` | require API keys |
+| `GATEWAY_RECONNECT_INITIAL_DELAY`, `GATEWAY_RECONNECT_MAX_DELAY` | `1`, `60` | reconnect backoff (seconds) |
+| `GATEWAY_STARTUP_CONNECT_TIMEOUT` | `10` | seconds to wait for servers at startup |
+| `GATEWAY_HEALTH_CHECK_INTERVAL` | `30` | seconds between health checks / re-lists |
+| `GATEWAY_CATALOG_TTL` | `30` | seconds before a list request re-fetches the catalog |
+| `GATEWAY_CHANGE_DEBOUNCE` | `1` | seconds to wait after a change notification |
+| `GATEWAY_CLIENT_SESSION_IDLE` | `300` | seconds before an unused client session closes |
 
 **Client API keys:**
 
@@ -80,15 +157,16 @@ variables already set in the real environment take precedence. See
 **MCP servers.** `SERVER_<ID>` in lowercase becomes the server's name and tool prefix, so
 `SERVER_1_URL` gives tools named `server_1__...`.
 
-| variable | default | meaning |
+Every server needs all six of these; the code has no per-server defaults (they mirror the server table's columns).
+
+| variable | example | meaning |
 |---|---|---|
-| `SERVER_<ID>_URL` | required | The server's live MCP URL |
-| `SERVER_<ID>_TRANSPORT` | `streamable_http` | `streamable_http` or `sse` (legacy servers) |
-| `SERVER_<ID>_HEADER_<HEADER>` | | Header sent to the server; `_` becomes `-` (`X_API_KEY` → `X-API-KEY`) |
-| `SERVER_<ID>_TIMEOUT` | `60` | Per-request timeout in seconds |
-| `SERVER_<ID>_ENABLED` | `true` | Set to `false` to turn off without deleting |
-| `SERVER_<ID>_INCLUDE_TOOLS` | all | Comma-separated globs of tools to expose |
-| `SERVER_<ID>_EXCLUDE_TOOLS` | none | Comma-separated globs of tools to hide |
+| `SERVER_<ID>_URL` | `http://127.0.0.1:9001/mcp` | The server's live MCP URL |
+| `SERVER_<ID>_TRANSPORT` | `streamable_http` | `streamable_http` or `sse` (older servers) |
+| `SERVER_<ID>_TIMEOUT` | `60` | Seconds to wait for each reply |
+| `SERVER_<ID>_ENABLED` | `true` | `false` turns the server off without deleting it |
+| `SERVER_<ID>_INCLUDE_TOOLS` | `*` | Comma-separated globs of tools to expose |
+| `SERVER_<ID>_EXCLUDE_TOOLS` | `delete_*` | Comma-separated globs of tools to hide; may be empty |
 
 ## Connecting AI clients
 
@@ -146,7 +224,6 @@ gateway/
   auth.py       API-key ASGI middleware + per-key upstream scoping
   app.py        Starlette app: /mcp + /health
 servers/
-  _server_auth.py           bearer-token check shared by the sample servers
   server_1/ server_2/ server_3/   sample MCP servers (ports 9001-9003)
 clients/
   client_1/                 plain MCP client using the admin key

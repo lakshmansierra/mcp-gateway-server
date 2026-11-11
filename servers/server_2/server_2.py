@@ -1,12 +1,6 @@
 import argparse
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # project root, so project imports work when run as a file
 
 from mcp.server.mcpserver import Context, MCPServer
-
-from servers._server_auth import client_of, protect
 
 
 def build(name: str) -> MCPServer:
@@ -35,7 +29,7 @@ def build(name: str) -> MCPServer:
     @mcp.tool()
     def whoami(ctx: Context) -> str:
         """Which client the gateway is calling this server for."""
-        return f"{name} is serving client '{client_of(ctx)}'"
+        return f"{name} is serving client '{(ctx.headers or {}).get('x-mcp-client', 'unknown')}'"
 
     @mcp.tool()
     def delete_everything() -> str:
@@ -66,7 +60,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", default="server_2")
     parser.add_argument("--port", type=int, default=9002)
-    parser.add_argument("--token", help="token callers must send; defaults to <NAME>_HEADER_AUTHORIZATION from .env")
     args = parser.parse_args()
-    app = protect(build(args.name).streamable_http_app(), args.name, args.token)
+    app = build(args.name).streamable_http_app()
     uvicorn.run(app, host="127.0.0.1", port=args.port)

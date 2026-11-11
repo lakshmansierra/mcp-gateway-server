@@ -3,6 +3,10 @@
 Naming: tools and prompts are exposed as `<upstream>__<name>` so two upstreams can
 both offer e.g. `search` without colliding. Resource URIs are passed through
 unchanged and routed back to the upstream that listed them.
+
+Change notifications: clients can open a `subscriptions/listen` stream. When a server's
+tools, resources or prompts change, the gateway tells each listening client, but only
+if its API key may use that server, so no client learns about servers it can't reach.
 """
 
 from __future__ import annotations
@@ -17,15 +21,15 @@ import anyio
 import mcp_types as types
 from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel import Server
+from mcp.server.subscriptions import ListenHandler
 from mcp.shared.exceptions import MCPError
+from mcp.shared.subscriptions import ServerEvent
 
 from gateway.auth import api_key_from_request
-from gateway.config import NAME_SEPARATOR, GatewayConfig
+from gateway.config import NAME_SEPARATOR, ApiKeyConfig, GatewayConfig
 from gateway.upstream import Upstream, UpstreamPool, UpstreamUnavailableError
 
 logger = logging.getLogger(__name__)
-
-STARTUP_CONNECT_TIMEOUT = 10.0
 
 T = TypeVar("T")
 
@@ -47,10 +51,46 @@ def _template_regex(uri_template: str) -> re.Pattern[str]:
     return re.compile("^" + ".+?".join(re.escape(p) for p in parts) + "$")
 
 
+class ChangeBus:
+    """Fans catalog changes out to the clients' listen streams, tagged with the server they came from."""
+
+    def __init__(self) -> None:
+        self._listeners: dict[object, Callable[[str, ServerEvent], None]] = {}
+
+    def publish(self, upstream: str, events: list[ServerEvent]) -> None:
+        for listener in list(self._listeners.values()):
+            for event in events:
+                listener(upstream, event)
+
+    def subscribe(self, listener: Callable[[str, ServerEvent], None]) -> Callable[[], None]:
+        token = object()
+        self._listeners[token] = listener
+        return lambda: self._listeners.pop(token, None)
+
+
+class _ChangesVisibleTo:
+    """The bus one client's listen stream reads: only changes from servers its key may use."""
+
+    def __init__(self, bus: ChangeBus, key: ApiKeyConfig | None) -> None:
+        self._bus = bus
+        self._key = key
+
+    async def publish(self, event: ServerEvent) -> None:  # part of SubscriptionBus; the gateway publishes via ChangeBus
+        raise NotImplementedError
+
+    def subscribe(self, listener: Callable[[ServerEvent], None]) -> Callable[[], None]:
+        def deliver(upstream: str, event: ServerEvent) -> None:
+            if self._key is None or self._key.can_access(upstream):
+                listener(event)
+
+        return self._bus.subscribe(deliver)
+
+
 class Gateway:
     def __init__(self, config: GatewayConfig) -> None:
         self.config = config
-        self.pool = UpstreamPool(config.enabled_upstreams, config.gateway)
+        self.changes = ChangeBus()
+        self.pool = UpstreamPool(config.enabled_upstreams, config.gateway, on_change=self.changes.publish)
 
     # ---- access control ---------------------------------------------------
 
@@ -124,10 +164,20 @@ class Gateway:
         if not upstream.config.tool_allowed(tool):
             raise MCPError(types.INVALID_PARAMS, f"Tool '{params.name}' is not exposed by this gateway")
         logger.info("tools/call %s -> %s.%s", _caller(ctx), upstream_name, tool)
+        # Down or slow servers come back as tool errors, not protocol errors, so an AI agent
+        # sees the reason and can retry or pick another tool instead of its whole run failing.
         try:
             return await self._forward(ctx, upstream, lambda c: c.call_tool(tool, params.arguments))
         except UpstreamUnavailableError as exc:
-            return types.CallToolResult(content=[types.TextContent(text=str(exc))], is_error=True)
+            return _tool_error(str(exc))
+        except MCPError as exc:
+            if exc.error.code != types.REQUEST_TIMEOUT:
+                raise
+            logger.warning("tools/call %s -> %s.%s timed out", _caller(ctx), upstream_name, tool)
+            return _tool_error(
+                f"'{params.name}' timed out: server '{upstream_name}' did not answer within "
+                f"{upstream.config.timeout_seconds:g}s"
+            )
 
     # ---- resources --------------------------------------------------------
 
@@ -196,6 +246,16 @@ class Gateway:
         argument = {"name": params.argument.name, "value": params.argument.value}
         return await self._forward_or_error(ctx, upstream, lambda c: c.complete(ref, argument, context_args))
 
+    # ---- change notifications ---------------------------------------------
+
+    async def listen(
+        self, ctx: ServerRequestContext[Any, Any], params: types.SubscriptionsListenRequestParams
+    ) -> types.SubscriptionsListenResult:
+        """Serve one client's change stream, limited to the servers its key may use."""
+        logger.info("subscriptions/listen opened by %s", _caller(ctx))
+        handler = ListenHandler(_ChangesVisibleTo(self.changes, api_key_from_request(ctx.request)))
+        return await handler(ctx, params)
+
     async def _forward_or_error(
         self, ctx: ServerRequestContext[Any, Any], upstream: Upstream, call: Callable[[Any], Any]
     ) -> Any:
@@ -203,6 +263,10 @@ class Gateway:
             return await self._forward(ctx, upstream, call)
         except UpstreamUnavailableError as exc:
             raise MCPError(types.INTERNAL_ERROR, str(exc)) from exc
+
+
+def _tool_error(message: str) -> types.CallToolResult:
+    return types.CallToolResult(content=[types.TextContent(text=message)], is_error=True)
 
 
 def _client_id(ctx: ServerRequestContext[Any, Any]) -> str | None:
@@ -220,7 +284,7 @@ def build_server(gateway: Gateway) -> Server[Any]:
     async def lifespan(_: Server[Any]) -> AsyncIterator[dict[str, Any]]:
         async with anyio.create_task_group() as tg:
             tg.start_soon(gateway.pool.run)
-            await gateway.pool.wait_until_ready(STARTUP_CONNECT_TIMEOUT)
+            await gateway.pool.wait_until_ready(gateway.config.gateway.startup_connect_timeout)
             try:
                 yield {"gateway": gateway}
             finally:
@@ -229,7 +293,7 @@ def build_server(gateway: Gateway) -> Server[Any]:
     upstream_names = ", ".join(gateway.pool.upstreams) or "none"
     return Server(
         gateway.config.gateway.name,
-        version="1.0.0",
+        version=gateway.config.gateway.version,
         instructions=(
             "This gateway aggregates several MCP servers. Tool and prompt names are "
             f"prefixed with their server name and '{NAME_SEPARATOR}'. Connected servers: {upstream_names}."
@@ -243,4 +307,5 @@ def build_server(gateway: Gateway) -> Server[Any]:
         on_list_prompts=gateway.list_prompts,
         on_get_prompt=gateway.get_prompt,
         on_completion=gateway.complete,
+        on_subscriptions_listen=gateway.listen,
     )
