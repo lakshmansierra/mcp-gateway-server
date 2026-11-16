@@ -51,8 +51,12 @@ def hash_api_key(key: str) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
-def create_access_token(user_id: int, user_name: str, user_type: str) -> tuple[str, int]:
-    """Signed token for a logged-in user, and its lifetime in seconds."""
+def create_access_token(user_id: int, user_name: str, user_type: str, token_version: int) -> tuple[str, int]:
+    """Signed token for a logged-in user, and its lifetime in seconds.
+
+    `ver` is the user's token_version at login; bumping it in the DB (password change) ends every token.
+    `jti` is this token's own id; putting it in the revoked-token table (logout) ends just this token.
+    """
     s = get_settings()
     now = datetime.now(UTC)
     expires_in = s.jwt_expire_minutes * 60
@@ -60,6 +64,8 @@ def create_access_token(user_id: int, user_name: str, user_type: str) -> tuple[s
         "sub": str(user_id),
         "name": user_name,
         "type": user_type,
+        "ver": token_version,
+        "jti": secrets.token_urlsafe(16),
         "iat": now,
         "exp": now + timedelta(seconds=expires_in),
     }
@@ -68,4 +74,4 @@ def create_access_token(user_id: int, user_name: str, user_type: str) -> tuple[s
 
 def decode_access_token(token: str) -> dict[str, Any]:
     """The token's claims; raises jwt.InvalidTokenError if it is forged, malformed or expired."""
-    return jwt.decode(token, get_settings().jwt_secret, algorithms=[JWT_ALGORITHM], options={"require": ["sub", "exp"]})
+    return jwt.decode(token, get_settings().jwt_secret, algorithms=[JWT_ALGORITHM], options={"require": ["sub", "exp", "ver", "jti"]})

@@ -48,6 +48,7 @@ class Settings:
     server_table: str
     api_key_table: str
     api_key_mapping_table: str
+    revoked_token_table: str
     cors_origins: list[str]
     jwt_secret: str
     jwt_expire_minutes: int
@@ -72,6 +73,7 @@ def get_settings() -> Settings:
         server_table=_identifier("MCP_SERVER_TABLE"),
         api_key_table=_identifier("MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE"),
         api_key_mapping_table=_identifier("MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE"),
+        revoked_token_table=_identifier("REVOKED_TOKEN_TABLE"),
         cors_origins=[o.strip() for o in origins.split(",") if o.strip()],
         jwt_secret=_jwt_secret(),
         jwt_expire_minutes=int(os.getenv("JWT_EXPIRE_MINUTES", "480")),

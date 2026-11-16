@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import HTTPException, status
 from hdbcli import dbapi
 
-from backend.db import api_keys, users
+from backend.db import api_keys, revoked_tokens, users
 from backend.models import PasswordChange, PasswordReset, UserDeletedOut, UserOut
 from backend.security import hash_password, verify_password
 
@@ -14,6 +16,34 @@ def _save_password(conn: dbapi.Connection, cur: dbapi.Cursor, user_id: int, new_
     if not users.set_password_hash(cur, user_id, hash_password(new_password)):
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"User {user_id} not found")
     conn.commit()
+
+
+def logout_this_device(conn: dbapi.Connection, user_id: int, jti: str, expires_at: datetime) -> None:
+    """End only the session this token belongs to: its id goes into the revoked-token table.
+    Rows for tokens that have expired anyway are cleaned up at the same time."""
+    cur = conn.cursor()
+    try:
+        revoked_tokens.revoke(cur, jti, user_id, expires_at)
+        revoked_tokens.purge_expired(cur)
+        conn.commit()
+    except dbapi.Error as exc:
+        conn.rollback()
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Database error: {exc.errortext}") from exc
+    finally:
+        cur.close()
+
+
+def logout_everywhere(conn: dbapi.Connection, me: UserOut) -> None:
+    """End every session of this account on every device (token_version + 1)."""
+    cur = conn.cursor()
+    try:
+        users.bump_token_version(cur, me.id)
+        conn.commit()
+    except dbapi.Error as exc:
+        conn.rollback()
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Database error: {exc.errortext}") from exc
+    finally:
+        cur.close()
 
 
 def change_own_password(conn: dbapi.Connection, me: UserOut, body: PasswordChange) -> None:

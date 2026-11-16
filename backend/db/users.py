@@ -8,6 +8,7 @@ from typing import NamedTuple
 from hdbcli import dbapi
 
 from backend.config import get_settings
+from backend.db import revoked_tokens
 
 
 class UserRow(NamedTuple):
@@ -34,27 +35,36 @@ class LoginRow(NamedTuple):
     created_at: datetime
     password_hash: str
     is_deleted: bool
+    token_version: int
 
 
 def get_for_login(cur: dbapi.Cursor, user_name: str) -> LoginRow | None:
     """The user with this name (any case), including the password hash, or None."""
     cur.execute(
-        f'SELECT {_USER_COLUMNS}, "password_hash", "is_deleted" '
+        f'SELECT {_USER_COLUMNS}, "password_hash", "is_deleted", "token_version" '
         f'FROM {_table()} WHERE LOWER("user_name") = LOWER(?)',
         (user_name,),
     )
     row = cur.fetchone()
-    return None if row is None else LoginRow(*row[:6], bool(row[6]))
+    return None if row is None else LoginRow(*row[:6], bool(row[6]), row[7])
 
 
-def get_active(cur: dbapi.Cursor, user_id: int) -> UserRow | None:
-    """The user with this id, unless deleted."""
+def get_active_for_auth(cur: dbapi.Cursor, user_id: int, jti: str) -> tuple[UserRow, int, bool] | None:
+    """For checking a login token, in one query: the live user, their current token_version (the token must
+    carry the same number), and whether this token (jti) was logged out. None if the user is missing or deleted."""
     cur.execute(
-        f'SELECT {_USER_COLUMNS} FROM {_table()} WHERE "id" = ? AND "is_deleted" = 0',
-        (user_id,),
+        f'SELECT {_USER_COLUMNS}, "token_version", '
+        f'(SELECT COUNT(*) FROM {revoked_tokens.table()} WHERE "jti" = ?) '
+        f'FROM {_table()} WHERE "id" = ? AND "is_deleted" = 0',
+        (jti, user_id),
     )
     row = cur.fetchone()
-    return None if row is None else UserRow(*row)
+    return None if row is None else (UserRow(*row[:5]), row[5], row[6] > 0)
+
+
+def bump_token_version(cur: dbapi.Cursor, user_id: int) -> None:
+    """Log the user out everywhere: every token issued so far stops working. The caller commits."""
+    cur.execute(f'UPDATE {_table()} SET "token_version" = "token_version" + 1 WHERE "id" = ?', (user_id,))
 
 
 def get_by_id(cur: dbapi.Cursor, user_id: int) -> tuple[UserRow, bool] | None:
@@ -75,9 +85,11 @@ def get_password_hash(cur: dbapi.Cursor, user_id: int) -> str | None:
 
 
 def set_password_hash(cur: dbapi.Cursor, user_id: int, password_hash: str) -> bool:
-    """Replace a live user's password hash. False if missing or deleted. The caller commits."""
+    """Replace a live user's password hash and log them out everywhere (token_version + 1).
+    False if missing or deleted. The caller commits."""
     cur.execute(
-        f'UPDATE {_table()} SET "password_hash" = ? WHERE "id" = ? AND "is_deleted" = 0',
+        f'UPDATE {_table()} SET "password_hash" = ?, "token_version" = "token_version" + 1 '
+        f'WHERE "id" = ? AND "is_deleted" = 0',
         (password_hash, user_id),
     )
     return cur.rowcount > 0
@@ -91,10 +103,13 @@ def deleted_by(cur: dbapi.Cursor, user_id: int) -> int | None:
 
 
 def soft_delete(cur: dbapi.Cursor, user_id: int, deleted_by: int) -> datetime | None:
-    """Mark the user deleted (the row is kept). Returns the deletion time, or None if already deleted."""
+    """Mark the user deleted (the row is kept) and end their sessions (token_version + 1), so tokens
+    from before the delete don't come back to life if the user is restored.
+    Returns the deletion time, or None if already deleted."""
     table = _table()
     cur.execute(
-        f'UPDATE {table} SET "is_deleted" = 1, "deleted_by" = ?, "deleted_at" = CURRENT_TIMESTAMP '
+        f'UPDATE {table} SET "is_deleted" = 1, "deleted_by" = ?, "deleted_at" = CURRENT_TIMESTAMP, '
+        f'"token_version" = "token_version" + 1 '
         f'WHERE "id" = ? AND "is_deleted" = 0',
         (deleted_by, user_id),
     )

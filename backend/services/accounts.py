@@ -62,6 +62,6 @@ def login(conn: dbapi.Connection, body: LoginRequest, account_type: AccountType)
     if row is None or not password_ok or row.is_deleted or row.type != account_type:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, LOGIN_FAILED)
 
-    token, expires_in = create_access_token(row.id, row.user_name, row.type)
+    token, expires_in = create_access_token(row.id, row.user_name, row.type, row.token_version)
     user = UserOut(id=row.id, user_name=row.user_name, type=row.type, created_by=row.created_by, created_at=row.created_at)
     return TokenOut(access_token=token, expires_in=expires_in, user=user)
