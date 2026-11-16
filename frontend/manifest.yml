@@ -1,0 +1,16 @@
+---
+# Cloud Foundry manifest for the MCP Gateway UI (static React/Vite build).
+# Build first (npm run build), then from this folder: cf push
+applications:
+  - name: mcp-gateway-ui
+    path: dist                     # only the production build is uploaded
+    buildpacks:
+      - staticfile_buildpack       # nginx; see public/Staticfile for its settings
+    memory: 64M
+    disk_quota: 256M
+    instances: 1
+    health-check-type: http
+    health-check-http-endpoint: /
+    # Uncomment to pin a hostname instead of the default <name>.<your-cf-domain>:
+    # routes:
+    #   - route: mcp-gateway-ui.<your-cf-domain>

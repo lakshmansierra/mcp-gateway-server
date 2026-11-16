@@ -1,0 +1,4 @@
+root: .
+pushstate: enabled
+force_https: true
+http_strict_transport_security: true

@@ -1,0 +1,6 @@
+# Only dist/ is pushed (manifest path), but guard against a push without the manifest.
+node_modules/
+.venv/
+.git/
+src/
+.env*
