@@ -137,7 +137,7 @@ variables already set in the real environment take precedence. See
 | `GATEWAY_NAME`, `GATEWAY_VERSION` | `mcp-gateway`, `1.0.0` | name and version reported to clients and servers |
 | `GATEWAY_TRANSPORT` | `http` | `http` or `stdio`; the `--transport` flag overrides it |
 | `GATEWAY_HOST`, `GATEWAY_PORT`, `GATEWAY_PATH` | `127.0.0.1`, `8080`, `/mcp` | where the gateway listens |
-| `GATEWAY_ALLOWED_HOSTS` | empty (any) | hostnames for DNS-rebinding protection |
+| `GATEWAY_ALLOWED_HOSTS` | empty | host:port values clients may use (DNS-rebinding protection); empty = localhost only on 127.0.0.1, any Host otherwise |
 | `GATEWAY_LOG_LEVEL` | `INFO` | log detail |
 | `GATEWAY_AUTH_ENABLED` | `true` | require API keys |
 | `GATEWAY_RECONNECT_INITIAL_DELAY`, `GATEWAY_RECONNECT_MAX_DELAY` | `1`, `60` | reconnect backoff (seconds) |
