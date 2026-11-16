@@ -9,8 +9,15 @@ from pydantic import BaseModel, Field, field_validator
 from backend.security import BCRYPT_MAX_BYTES
 
 
+def _new_password_rules(v: str) -> str:
+    """Every password that gets stored: at least 8 characters (Field) and at most bcrypt's 72 bytes."""
+    if len(v.encode("utf-8")) > BCRYPT_MAX_BYTES:
+        raise ValueError(f"password must be at most {BCRYPT_MAX_BYTES} bytes")
+    return v
+
+
 class RegisterRequest(BaseModel):
-    """Body of POST /api/admin/register and /api/user/register."""
+    """Body of POST /api/admin/register (new admin) and POST /api/admin/users (new user)."""
 
     user_name: str = Field(min_length=3, max_length=100, pattern=r"^[A-Za-z0-9._-]+$")
     password: str = Field(min_length=8)
@@ -18,9 +25,30 @@ class RegisterRequest(BaseModel):
     @field_validator("password")
     @classmethod
     def _bcrypt_limit(cls, v: str) -> str:
-        if len(v.encode("utf-8")) > BCRYPT_MAX_BYTES:
-            raise ValueError(f"password must be at most {BCRYPT_MAX_BYTES} bytes")
-        return v
+        return _new_password_rules(v)
+
+
+class PasswordChange(BaseModel):
+    """Body of PATCH /api/me/password."""
+
+    old_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=8)
+
+    @field_validator("new_password")
+    @classmethod
+    def _bcrypt_limit(cls, v: str) -> str:
+        return _new_password_rules(v)
+
+
+class PasswordReset(BaseModel):
+    """Body of PATCH /api/admin/users/{user_id}/password."""
+
+    new_password: str = Field(min_length=8)
+
+    @field_validator("new_password")
+    @classmethod
+    def _bcrypt_limit(cls, v: str) -> str:
+        return _new_password_rules(v)
 
 
 class UserOut(BaseModel):
@@ -29,6 +57,7 @@ class UserOut(BaseModel):
     id: int
     user_name: str
     type: str
+    created_by: int | None  # the admin who created this account; null for admins
     created_at: datetime
 
 

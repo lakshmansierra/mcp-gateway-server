@@ -9,6 +9,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import hashlib
+import secrets
+
 import bcrypt
 import jwt
 
@@ -29,6 +32,23 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, password_hash: str | None) -> bool:
     ok = bcrypt.checkpw(password.encode("utf-8"), (password_hash or _DUMMY_HASH).encode("ascii"))
     return ok and password_hash is not None
+
+
+API_KEY_PREFIX = "mcpg_"  # makes gateway keys easy to recognise (e.g. by secret scanners)
+
+
+def new_api_key() -> tuple[str, str]:
+    """A new random gateway API key and its SHA-256 hash. Store only the hash; show the key once.
+
+    A fast unsalted hash is right here (unlike passwords): the key is 256 random bits, so it can't be guessed,
+    and the gateway must find a key by its hash (WHERE key_hash = ?).
+    """
+    key = API_KEY_PREFIX + secrets.token_urlsafe(32)
+    return key, hash_api_key(key)
+
+
+def hash_api_key(key: str) -> str:
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 def create_access_token(user_id: int, user_name: str, user_type: str) -> tuple[str, int]:

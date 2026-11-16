@@ -17,7 +17,10 @@ AccountType = Literal["admin", "user"]
 LOGIN_FAILED = "Invalid user name or password"
 
 
-def register(conn: dbapi.Connection, body: RegisterRequest, account_type: AccountType) -> UserOut:
+def register(
+    conn: dbapi.Connection, body: RegisterRequest, account_type: AccountType, created_by: int | None = None
+) -> UserOut:
+    """Create an account. `created_by` is the admin creating a user; None for admins (made with ADMIN_REGISTER_KEY)."""
     cur = conn.cursor()
     try:
         # user_name is UNIQUE in the table, deleted users included, so a deleted user's name stays taken.
@@ -27,7 +30,7 @@ def register(conn: dbapi.Connection, body: RegisterRequest, account_type: Accoun
             detail = "belongs to a deleted user" if deleted else "already exists"
             raise HTTPException(status.HTTP_409_CONFLICT, f"User name '{body.user_name}' {detail}")
 
-        row = users.insert(cur, body.user_name, hash_password(body.password), account_type)
+        row = users.insert(cur, body.user_name, hash_password(body.password), account_type, created_by)
         conn.commit()
     except HTTPException:
         raise
@@ -60,5 +63,5 @@ def login(conn: dbapi.Connection, body: LoginRequest, account_type: AccountType)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, LOGIN_FAILED)
 
     token, expires_in = create_access_token(row.id, row.user_name, row.type)
-    user = UserOut(id=row.id, user_name=row.user_name, type=row.type, created_at=row.created_at)
+    user = UserOut(id=row.id, user_name=row.user_name, type=row.type, created_by=row.created_by, created_at=row.created_at)
     return TokenOut(access_token=token, expires_in=expires_in, user=user)

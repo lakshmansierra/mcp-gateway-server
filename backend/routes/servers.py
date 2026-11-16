@@ -5,6 +5,7 @@ PATCH  /api/admin/servers/{server_id}  edit a server (only the fields sent; not 
 DELETE /api/admin/servers/{server_id}  soft-delete an MCP server
 POST   /api/admin/servers/{server_id}/restore
                                        undo a soft delete
+Edit, delete and restore: only servers you added, or that users you created added.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ def update_server(
     admin: UserOut = Depends(current_admin),
     conn: dbapi.Connection = Depends(get_db),
 ) -> ServerOut:
-    return server_service.update_server(conn, server_id, body)
+    return server_service.update_server(conn, server_id, body, admin)
 
 
 @router.delete("/{server_id}", response_model=ServerDeletedOut)
@@ -54,4 +55,4 @@ def restore_server(
     admin: UserOut = Depends(current_admin),
     conn: dbapi.Connection = Depends(get_db),
 ) -> ServerOut:
-    return server_service.restore_server(conn, server_id)
+    return server_service.restore_server(conn, server_id, admin)

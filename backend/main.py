@@ -19,7 +19,7 @@ from hdbcli import dbapi
 
 from backend.config import get_settings
 from backend.db import get_db
-from backend.routes import admin, servers, user
+from backend.routes import admin, api_keys, me, servers, user
 
 app = FastAPI(title="MCP Gateway Backend", version="0.1.0")
 
@@ -33,7 +33,10 @@ app.add_middleware(
 
 app.include_router(admin.router)
 app.include_router(user.router)
+app.include_router(me.router)
 app.include_router(servers.router)
+app.include_router(api_keys.router)
+app.include_router(api_keys.admin_router)
 
 
 @app.get("/api/health", tags=["health"])

@@ -6,7 +6,64 @@ from fastapi import HTTPException, status
 from hdbcli import dbapi
 
 from backend.db import api_keys, users
-from backend.models import UserDeletedOut, UserOut
+from backend.models import PasswordChange, PasswordReset, UserDeletedOut, UserOut
+from backend.security import hash_password, verify_password
+
+
+def _save_password(conn: dbapi.Connection, cur: dbapi.Cursor, user_id: int, new_password: str) -> None:
+    if not users.set_password_hash(cur, user_id, hash_password(new_password)):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"User {user_id} not found")
+    conn.commit()
+
+
+def change_own_password(conn: dbapi.Connection, me: UserOut, body: PasswordChange) -> None:
+    """Any logged-in admin or user changes their own password; the old one must be given."""
+    cur = conn.cursor()
+    try:
+        current_hash = users.get_password_hash(cur, me.id)
+        if current_hash is None or not verify_password(body.old_password, current_hash):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Old password is wrong")
+        if verify_password(body.new_password, current_hash):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "New password must differ from the old one")
+        _save_password(conn, cur, me.id, body.new_password)
+    except HTTPException:
+        conn.rollback()
+        raise
+    except dbapi.Error as exc:
+        conn.rollback()
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Database error: {exc.errortext}") from exc
+    finally:
+        cur.close()
+
+
+def reset_password(conn: dbapi.Connection, user_id: int, body: PasswordReset, admin: UserOut) -> UserOut:
+    """An admin sets a new password (no old one needed) for themselves or for a user they created.
+
+    Not for other admins, or for users another admin created. Deleted accounts can't be reset.
+    """
+    cur = conn.cursor()
+    try:
+        found = users.get_by_id(cur, user_id)
+        if found is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"User {user_id} not found")
+        target, is_deleted = found
+        if not (target.id == admin.id or (target.type == "user" and target.created_by == admin.id)):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "You can only reset your own password or those of users you created"
+            )
+        if is_deleted:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"User '{target.user_name}' is deleted")
+        _save_password(conn, cur, user_id, body.new_password)
+    except HTTPException:
+        conn.rollback()
+        raise
+    except dbapi.Error as exc:
+        conn.rollback()
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Database error: {exc.errortext}") from exc
+    finally:
+        cur.close()
+
+    return UserOut(**target._asdict())
 
 
 def delete_user(conn: dbapi.Connection, user_id: int, admin: UserOut) -> UserDeletedOut:
@@ -14,7 +71,7 @@ def delete_user(conn: dbapi.Connection, user_id: int, admin: UserOut) -> UserDel
 
     The row stays (is_deleted = 1, deleted_by = the admin, deleted_at = now), so the name stays taken and the
     history is kept. Their login stops working at once, and so do their gateway keys.
-    Only accounts of type 'user' can be deleted here; admins are not.
+    An admin may delete only the users they created (created_by); no admin can be deleted, not even yourself.
     """
     cur = conn.cursor()
     try:
@@ -23,7 +80,9 @@ def delete_user(conn: dbapi.Connection, user_id: int, admin: UserOut) -> UserDel
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"User {user_id} not found")
         user, is_deleted = found
         if user.type != "user":
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only user accounts can be deleted, not admins")
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Admins can't be deleted")
+        if user.created_by != admin.id:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "You can only delete users you created")
         if is_deleted:
             raise HTTPException(status.HTTP_409_CONFLICT, f"User '{user.user_name}' is already deleted")
 
@@ -44,8 +103,8 @@ def delete_user(conn: dbapi.Connection, user_id: int, admin: UserOut) -> UserDel
     return UserDeletedOut(user=UserOut(**user._asdict()), deleted_by=admin.id, deleted_at=deleted_at, api_keys_revoked=revoked)
 
 
-def restore_user(conn: dbapi.Connection, user_id: int) -> UserOut:
-    """Undo a user's soft delete, so they can log in again.
+def restore_user(conn: dbapi.Connection, user_id: int, admin: UserOut) -> UserOut:
+    """Undo a user's soft delete, so they can log in again. An admin may restore only users they deleted.
 
     Their API keys stay revoked: the table can't tell keys revoked with the user from keys deleted earlier
     on purpose, so the user creates new keys after being restored.
@@ -58,7 +117,11 @@ def restore_user(conn: dbapi.Connection, user_id: int) -> UserOut:
         user, is_deleted = found
         if user.type != "user":
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Only user accounts can be restored, not admins")
-        if not is_deleted or not users.restore(cur, user_id):
+        if not is_deleted:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"User '{user.user_name}' is not deleted")
+        if users.deleted_by(cur, user_id) != admin.id:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "You can only restore users you deleted")
+        if not users.restore(cur, user_id):
             raise HTTPException(status.HTTP_409_CONFLICT, f"User '{user.user_name}' is not deleted")
         conn.commit()
     except HTTPException:

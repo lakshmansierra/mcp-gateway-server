@@ -8,6 +8,7 @@ from hdbcli import dbapi
 from backend.db import servers
 from backend.models import ServerCreate, ServerDeletedOut, ServerOut, ServerUpdate, UserOut
 from backend.models.server import split_tools
+from backend.services.ownership import require_admin_manages
 
 
 def to_out(row: servers.ServerRow) -> ServerOut:
@@ -60,8 +61,9 @@ def register_server(conn: dbapi.Connection, body: ServerCreate, admin: UserOut) 
     return to_out(row)
 
 
-def update_server(conn: dbapi.Connection, server_id: int, body: ServerUpdate) -> ServerOut:
-    """Change the fields that were sent. Deleted servers can't be edited.
+def update_server(conn: dbapi.Connection, server_id: int, body: ServerUpdate, admin: UserOut) -> ServerOut:
+    """Change the fields that were sent. Deleted servers can't be edited. Same ownership rule as deleting:
+    servers the admin added, or that users the admin created added.
 
     Renaming a server changes its tool prefix (abc__add -> new__add); key mappings use the server id, so
     they keep working.
@@ -73,6 +75,7 @@ def update_server(conn: dbapi.Connection, server_id: int, body: ServerUpdate) ->
         if found is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Server {server_id} not found")
         current, is_deleted = found
+        require_admin_manages(cur, current.user_id, admin, "servers")
         if is_deleted:
             raise HTTPException(status.HTTP_409_CONFLICT, f"Server '{current.server_name}' is deleted and can't be edited")
 
@@ -103,15 +106,16 @@ def update_server(conn: dbapi.Connection, server_id: int, body: ServerUpdate) ->
     return to_out(row)
 
 
-def restore_server(conn: dbapi.Connection, server_id: int) -> ServerOut:
+def restore_server(conn: dbapi.Connection, server_id: int, admin: UserOut) -> ServerOut:
     """Undo a server's soft delete. It comes back with its old settings (including enabled/disabled),
-    and keys that were mapped to it can use it again."""
+    and keys that were mapped to it can use it again. Same ownership rule as deleting."""
     cur = conn.cursor()
     try:
         found = servers.get_by_id(cur, server_id)
         if found is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Server {server_id} not found")
         row, is_deleted = found
+        require_admin_manages(cur, row.user_id, admin, "servers")
         if not is_deleted or not servers.restore(cur, server_id):
             raise HTTPException(status.HTTP_409_CONFLICT, f"Server '{row.server_name}' is not deleted")
         conn.commit()
@@ -130,6 +134,8 @@ def restore_server(conn: dbapi.Connection, server_id: int) -> ServerOut:
 def delete_server(conn: dbapi.Connection, server_id: int, admin: UserOut) -> ServerDeletedOut:
     """Soft-delete a server: the row stays (is_deleted = 1, deleted_by = the admin, deleted_at = now).
 
+    An admin may delete the servers they added and the servers added by users they created.
+
     Its name stays taken. Rows in the key-to-server mapping table are kept as history; anything reading
     servers for the gateway must skip deleted ones.
     """
@@ -139,6 +145,7 @@ def delete_server(conn: dbapi.Connection, server_id: int, admin: UserOut) -> Ser
         if found is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Server {server_id} not found")
         row, is_deleted = found
+        require_admin_manages(cur, row.user_id, admin, "servers")
         if is_deleted:
             raise HTTPException(status.HTTP_409_CONFLICT, f"Server '{row.server_name}' is already deleted")
 

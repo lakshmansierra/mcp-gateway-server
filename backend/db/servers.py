@@ -54,6 +54,18 @@ def soft_delete(cur: dbapi.Cursor, server_id: int, deleted_by: int) -> datetime 
     return cur.fetchone()[0]
 
 
+def live_ids(cur: dbapi.Cursor, server_ids: list[int]) -> set[int]:
+    """Which of these ids are servers a key may be given: not deleted and enabled."""
+    if not server_ids:
+        return set()
+    placeholders = ", ".join("?" for _ in server_ids)
+    cur.execute(
+        f'SELECT "id" FROM {_table()} WHERE "id" IN ({placeholders}) AND "is_deleted" = 0 AND "enabled" = 1',
+        tuple(server_ids),
+    )
+    return {row[0] for row in cur.fetchall()}
+
+
 def restore(cur: dbapi.Cursor, server_id: int) -> bool:
     """Undo a soft delete. False if the server isn't deleted. The caller commits."""
     cur.execute(

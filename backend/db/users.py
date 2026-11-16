@@ -14,7 +14,11 @@ class UserRow(NamedTuple):
     id: int
     user_name: str
     type: str
+    created_by: int | None  # the admin who created this account; NULL for admins
     created_at: datetime
+
+
+_USER_COLUMNS = '"id", "user_name", "type", "created_by", "created_at"'
 
 
 def _table() -> str:
@@ -26,6 +30,7 @@ class LoginRow(NamedTuple):
     id: int
     user_name: str
     type: str
+    created_by: int | None
     created_at: datetime
     password_hash: str
     is_deleted: bool
@@ -34,18 +39,18 @@ class LoginRow(NamedTuple):
 def get_for_login(cur: dbapi.Cursor, user_name: str) -> LoginRow | None:
     """The user with this name (any case), including the password hash, or None."""
     cur.execute(
-        f'SELECT "id", "user_name", "type", "created_at", "password_hash", "is_deleted" '
+        f'SELECT {_USER_COLUMNS}, "password_hash", "is_deleted" '
         f'FROM {_table()} WHERE LOWER("user_name") = LOWER(?)',
         (user_name,),
     )
     row = cur.fetchone()
-    return None if row is None else LoginRow(*row[:5], bool(row[5]))
+    return None if row is None else LoginRow(*row[:6], bool(row[6]))
 
 
 def get_active(cur: dbapi.Cursor, user_id: int) -> UserRow | None:
     """The user with this id, unless deleted."""
     cur.execute(
-        f'SELECT "id", "user_name", "type", "created_at" FROM {_table()} WHERE "id" = ? AND "is_deleted" = 0',
+        f'SELECT {_USER_COLUMNS} FROM {_table()} WHERE "id" = ? AND "is_deleted" = 0',
         (user_id,),
     )
     row = cur.fetchone()
@@ -55,11 +60,34 @@ def get_active(cur: dbapi.Cursor, user_id: int) -> UserRow | None:
 def get_by_id(cur: dbapi.Cursor, user_id: int) -> tuple[UserRow, bool] | None:
     """The user with this id and whether they are deleted, or None if no such id."""
     cur.execute(
-        f'SELECT "id", "user_name", "type", "created_at", "is_deleted" FROM {_table()} WHERE "id" = ?',
+        f'SELECT {_USER_COLUMNS}, "is_deleted" FROM {_table()} WHERE "id" = ?',
         (user_id,),
     )
     row = cur.fetchone()
-    return None if row is None else (UserRow(*row[:4]), bool(row[4]))
+    return None if row is None else (UserRow(*row[:5]), bool(row[5]))
+
+
+def get_password_hash(cur: dbapi.Cursor, user_id: int) -> str | None:
+    """The stored bcrypt hash of a live user, or None if missing or deleted."""
+    cur.execute(f'SELECT "password_hash" FROM {_table()} WHERE "id" = ? AND "is_deleted" = 0', (user_id,))
+    row = cur.fetchone()
+    return None if row is None else row[0]
+
+
+def set_password_hash(cur: dbapi.Cursor, user_id: int, password_hash: str) -> bool:
+    """Replace a live user's password hash. False if missing or deleted. The caller commits."""
+    cur.execute(
+        f'UPDATE {_table()} SET "password_hash" = ? WHERE "id" = ? AND "is_deleted" = 0',
+        (password_hash, user_id),
+    )
+    return cur.rowcount > 0
+
+
+def deleted_by(cur: dbapi.Cursor, user_id: int) -> int | None:
+    """Who deleted this user (None if not deleted or no such user)."""
+    cur.execute(f'SELECT "deleted_by" FROM {_table()} WHERE "id" = ?', (user_id,))
+    row = cur.fetchone()
+    return None if row is None else row[0]
 
 
 def soft_delete(cur: dbapi.Cursor, user_id: int, deleted_by: int) -> datetime | None:
@@ -93,14 +121,16 @@ def find_by_name(cur: dbapi.Cursor, user_name: str) -> bool | None:
     return None if row is None else bool(row[0])
 
 
-def insert(cur: dbapi.Cursor, user_name: str, password_hash: str, user_type: str) -> UserRow:
+def insert(
+    cur: dbapi.Cursor, user_name: str, password_hash: str, user_type: str, created_by: int | None = None
+) -> UserRow:
     """Insert a user and return the saved row. The caller commits."""
     table = _table()
     cur.execute(
-        f'INSERT INTO {table} ("user_name", "password_hash", "type", "is_deleted") VALUES (?, ?, ?, 0)',
-        (user_name, password_hash, user_type),
+        f'INSERT INTO {table} ("user_name", "password_hash", "type", "created_by", "is_deleted") VALUES (?, ?, ?, ?, 0)',
+        (user_name, password_hash, user_type, created_by),
     )
     cur.execute("SELECT CURRENT_IDENTITY_VALUE() FROM DUMMY")
     new_id = cur.fetchone()[0]
-    cur.execute(f'SELECT "id", "user_name", "type", "created_at" FROM {table} WHERE "id" = ?', (new_id,))
+    cur.execute(f'SELECT {_USER_COLUMNS} FROM {table} WHERE "id" = ?', (new_id,))
     return UserRow(*cur.fetchone())
