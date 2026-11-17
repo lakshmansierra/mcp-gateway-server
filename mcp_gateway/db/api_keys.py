@@ -1,8 +1,10 @@
 """Read the client API keys from the key table (MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE).
 
 A key is live when it isn't deleted and neither is the user who owns it. Its servers:
-  all_servers = 1 (admins' keys)  every server
-  all_servers = 0 (users' keys)   the servers picked for it, from the mapping table; deleted servers drop out
+  all_servers = 1 (admins' keys)  every server that admin registered (the server row's user_id), enabled or not
+  all_servers = 0 (users' keys)   the servers picked for it, from the mapping table, while they are enabled,
+                                  and only those registered by the admin who created the user (created_by);
+                                  deleted servers drop out
 Only the SHA-256 hash of each key is stored, so the gateway hashes what a client sends and looks it up.
 """
 
@@ -18,7 +20,7 @@ def load_api_keys(cur: dbapi.Cursor, db: DatabaseSettings) -> list[ApiKeyConfig]
     users_t, servers_t = db.table(db.user_table), db.table(db.server_table)
 
     cur.execute(
-        f'SELECT k."id", u."user_name", k."key_name", k."key_hash", k."all_servers" '
+        f'SELECT k."id", k."user_id", u."created_by", u."user_name", k."key_name", k."key_hash", k."all_servers" '
         f'FROM {keys_t} k JOIN {users_t} u ON u."id" = k."user_id" '
         f'WHERE k."is_deleted" = 0 AND u."is_deleted" = 0 ORDER BY k."id"'
     )
@@ -35,10 +37,12 @@ def load_api_keys(cur: dbapi.Cursor, db: DatabaseSettings) -> list[ApiKeyConfig]
     return [
         ApiKeyConfig(
             id=key_id,
+            user_id=user_id,
+            admin_id=user_id if all_servers else created_by,  # whose servers this key may reach
             name=f"{user_name}/{key_name}",
             key_hash=key_hash,
             all_servers=bool(all_servers),
             servers=frozenset(() if all_servers else servers_of.get(key_id, ())),
         )
-        for key_id, user_name, key_name, key_hash, all_servers in rows
+        for key_id, user_id, created_by, user_name, key_name, key_hash, all_servers in rows
     ]

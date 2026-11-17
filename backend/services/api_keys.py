@@ -26,7 +26,8 @@ def update_key_servers(conn: dbapi.Connection, key_id: int, body: KeyServersUpda
     """Add servers to / remove servers from a key; the key value itself doesn't change.
 
     Same ownership rule as deleting a key. Only keys that list their servers (all_servers = 0) can be
-    changed; deleted keys can't. Added servers must be enabled and not deleted. Adding a server the key
+    changed; deleted keys can't. Added servers must be enabled, not deleted, and registered by the admin who
+    created the key's user (users only reach their own admin's servers). Adding a server the key
     already has, or removing one it doesn't have, is refused so mistakes are visible. A key must keep at
     least one server.
     """
@@ -40,7 +41,7 @@ def update_key_servers(conn: dbapi.Connection, key_id: int, body: KeyServersUpda
         if is_deleted:
             raise HTTPException(status.HTTP_409_CONFLICT, f"API key '{row.key_name}' is deleted and can't be changed")
         if row.all_servers:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"API key '{row.key_name}' already reaches every server")
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"API key '{row.key_name}' is an admin key: it already reaches every server its admin added")
 
         current = set(api_keys.mapped_server_ids(cur, key_id))
         already = sorted(set(body.add) & current)
@@ -49,10 +50,12 @@ def update_key_servers(conn: dbapi.Connection, key_id: int, body: KeyServersUpda
         missing = sorted(set(body.remove) - current)
         if missing:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"The key doesn't have these servers: {missing}")
-        unavailable = sorted(set(body.add) - servers.live_ids(cur, body.add))
+        key_owner = users.get_by_id(cur, row.user_id)
+        users_admin = key_owner[0].created_by if key_owner else None
+        unavailable = sorted(set(body.add) - servers.live_ids(cur, body.add, users_admin))
         if unavailable:
             raise HTTPException(
-                status.HTTP_400_BAD_REQUEST, f"These servers don't exist, are deleted or are disabled: {unavailable}"
+                status.HTTP_400_BAD_REQUEST, f"These servers don't exist, are deleted, are disabled or weren't added by this user's admin: {unavailable}"
             )
         if not (current - set(body.remove)) | set(body.add):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "A key must keep at least one server; delete the key instead")
@@ -175,14 +178,15 @@ def rotate_key(conn: dbapi.Connection, key_id: int, admin: UserOut) -> KeyCreate
 
 
 def create_key(conn: dbapi.Connection, body: KeyCreate, owner: UserOut) -> KeyCreatedOut:
-    """Admins get a key for every server (all_servers = 1) and must not send server_ids: the mapping table
+    """Admins get a key for every server they added (all_servers = 1) and must not send server_ids: the mapping table
     is only for the servers users pick. Users get a key for the servers they picked (all_servers = 0, one
-    mapping row each); the servers must exist, be enabled and not deleted.
+    mapping row each); the servers must exist, be enabled, not be deleted, and be registered by the admin who
+    created the user: users can't reach another admin's servers.
     """
     is_admin = owner.type == "admin"
     if is_admin and body.server_ids:
         raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "Admin keys reach every server; don't send server_ids (they are for users)"
+            status.HTTP_400_BAD_REQUEST, "Admin keys reach every server you added; don't send server_ids (they are for users)"
         )
     if not is_admin and not body.server_ids:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Pick at least one server in server_ids")
@@ -197,10 +201,10 @@ def create_key(conn: dbapi.Connection, body: KeyCreate, owner: UserOut) -> KeyCr
             raise HTTPException(status.HTTP_409_CONFLICT, f"Key name '{body.key_name}' {detail}")
 
         if server_ids:
-            unavailable = sorted(set(server_ids) - servers.live_ids(cur, server_ids))
+            unavailable = sorted(set(server_ids) - servers.live_ids(cur, server_ids, owner.created_by))
             if unavailable:
                 raise HTTPException(
-                    status.HTTP_400_BAD_REQUEST, f"These servers don't exist, are deleted or are disabled: {unavailable}"
+                    status.HTTP_400_BAD_REQUEST, f"These servers don't exist, are deleted, are disabled or weren't added by your admin: {unavailable}"
                 )
 
         key, key_hash = new_api_key()

@@ -86,6 +86,9 @@ class UpstreamConfig(BaseModel):
     # include_tools may be just "*" for every tool; no other wildcards are accepted.
     include_tools: list[str]
     exclude_tools: list[str]
+    # The admin who registered it (the row's user_id). While the server is disabled, only that admin's keys
+    # reach it; everyone else's lists and calls skip it.
+    owner_id: int | None = None
 
     @field_validator("name")
     @classmethod
@@ -116,13 +119,29 @@ class ApiKeyConfig(BaseModel):
     """A client API key: a live row of the key table. Only its SHA-256 hash is known, never the key itself."""
 
     id: int
+    user_id: int  # who owns the key
+    # The admin whose servers this key may reach: the key's owner for admin keys, the admin who created the
+    # user (user_mgs.created_by) for user keys. None = no admin, so no servers.
+    admin_id: int | None = None
     name: str  # "<user_name>/<key_name>": who is calling, in logs and in GATEWAY_CLIENT_ID_HEADER to servers
     key_hash: str = Field(repr=False)
-    all_servers: bool  # 1 for admins' keys: every server
+    all_servers: bool  # 1 for admins' keys: every server that admin registered (enabled or not)
     servers: frozenset[str] = frozenset()  # otherwise: the server_names picked for it (the mapping table)
 
-    def can_access(self, upstream: str) -> bool:
-        return self.all_servers or upstream in self.servers
+    def can_access(self, server: UpstreamConfig) -> bool:
+        """Only servers registered by this key's admin (admin_id); never another admin's.
+        Admin keys (all_servers): all of that admin's servers, enabled or disabled.
+        User keys: only the servers mapped to the key, and only while they are enabled."""
+        if server.owner_id is None or server.owner_id != self.admin_id:
+            return False
+        if self.all_servers:
+            return True
+        return server.enabled and server.name in self.servers
+
+    def can_access_name(self, server_name: str) -> bool:
+        """For a server that was just removed (its owner is no longer known): only used to decide who gets the
+        "lists changed, re-list" notice, which carries no data, so admin keys get it too."""
+        return self.all_servers or server_name in self.servers
 
 
 class GatewaySettings(BaseModel):
@@ -224,9 +243,6 @@ class GatewayConfig(BaseModel):
             raise ValueError(f"duplicate upstream names: {sorted(dupes)}")
         return v
 
-    @property
-    def enabled_upstreams(self) -> list[UpstreamConfig]:
-        return [u for u in self.upstreams if u.enabled]
 
 
 def load_config(env: Mapping[str, str] | None = None) -> GatewayConfig:

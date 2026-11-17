@@ -80,10 +80,11 @@ class _ChangesVisibleTo:
     servers changed, follows the key's current state instead of the one it had when the stream opened.
     """
 
-    def __init__(self, bus: ChangeBus, key: ApiKeyConfig | None, keys: KeyStore) -> None:
+    def __init__(self, bus: ChangeBus, key: ApiKeyConfig | None, keys: KeyStore, pool: UpstreamPool) -> None:
         self._bus = bus
         self._key = key
         self._keys = keys
+        self._pool = pool
 
     async def publish(self, event: ServerEvent) -> None:  # part of SubscriptionBus; the gateway publishes via ChangeBus
         raise NotImplementedError
@@ -94,7 +95,11 @@ class _ChangesVisibleTo:
                 listener(event)
                 return
             current = self._keys.get(self._key.id)  # None once the key is deleted
-            if current is not None and current.can_access(upstream):
+            if current is None:
+                return
+            server = self._pool.get(upstream)
+            # A server that was just removed is no longer in the pool: judge it by name.
+            if current.can_access(server.config) if server else current.can_access_name(upstream):
                 listener(event)
 
         return self._bus.subscribe(deliver)
@@ -104,7 +109,8 @@ class Gateway:
     def __init__(self, config: GatewayConfig) -> None:
         self.config = config
         self.changes = ChangeBus()
-        self.pool = UpstreamPool(config.enabled_upstreams, config.gateway, on_change=self.changes.publish)
+        # Disabled servers are connected too: their owning admin may still use them (ApiKeyConfig.can_access).
+        self.pool = UpstreamPool(config.upstreams, config.gateway, on_change=self.changes.publish)
         self.keys = KeyStore(config.api_keys)
 
     async def sync_from_db(self) -> None:
@@ -128,12 +134,12 @@ class Gateway:
 
     def _visible(self, ctx: ServerRequestContext[Any, Any]) -> list[Upstream]:
         key = api_key_from_request(ctx.request)
-        return [u for u in self.pool.upstreams.values() if u.connected and (key is None or key.can_access(u.name))]
+        return [u for u in self.pool.upstreams.values() if u.connected and (key is None or key.can_access(u.config))]
 
     def _resolve(self, ctx: ServerRequestContext[Any, Any], upstream_name: str) -> Upstream:
         upstream = self.pool.get(upstream_name)
         key = api_key_from_request(ctx.request)
-        if upstream is None or (key is not None and not key.can_access(upstream_name)):
+        if upstream is None or (key is not None and not key.can_access(upstream.config)):
             raise MCPError(types.INVALID_PARAMS, f"Unknown MCP server '{upstream_name}'")
         return upstream
 
@@ -285,7 +291,9 @@ class Gateway:
     ) -> types.SubscriptionsListenResult:
         """Serve one client's change stream, limited to the servers its key may use."""
         logger.info("subscriptions/listen opened by %s", _caller(ctx))
-        handler = ListenHandler(_ChangesVisibleTo(self.changes, api_key_from_request(ctx.request), self.keys))
+        handler = ListenHandler(
+            _ChangesVisibleTo(self.changes, api_key_from_request(ctx.request), self.keys, self.pool)
+        )
         return await handler(ctx, params)
 
     async def _forward_or_error(

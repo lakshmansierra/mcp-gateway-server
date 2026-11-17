@@ -23,7 +23,7 @@ def create_app(config: GatewayConfig) -> ASGIApp:
     async def health(_: Request) -> JSONResponse:
         # Public (no API key), so only names and counts: no server URLs (they can be internal hosts), no error
         # texts, and no client sessions (they name users and their keys). Logs have the details.
-        public = ("name", "connected", "tools", "resources", "prompts")
+        public = ("name", "enabled", "connected", "tools", "resources", "prompts")
         upstreams = [{k: u[k] for k in public} for u in gateway.pool.status()]
         healthy = any(u["connected"] for u in upstreams) or not upstreams
         return JSONResponse(

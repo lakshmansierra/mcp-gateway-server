@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class KeyCreate(BaseModel):
     """Body of POST /api/keys.
 
-    all_servers is not sent: admin keys always reach every server, user keys only the servers in server_ids.
+    all_servers is not sent: admin keys always reach every server that admin added (enabled or disabled), user
+    keys only the servers in server_ids, which must be enabled servers added by the user's own admin.
     """
 
     key_name: str = Field(
@@ -21,7 +22,7 @@ class KeyCreate(BaseModel):
     )
     server_ids: list[int] = Field(
         default_factory=list,
-        description="Users: the servers this key may reach (at least one). Admins must leave it out: their keys reach every server.",
+        description="Users: the servers this key may reach (at least one), from those your admin added. Admins must leave it out: their keys reach every server they added.",
     )
 
     @field_validator("server_ids")

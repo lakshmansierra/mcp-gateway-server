@@ -54,14 +54,16 @@ def soft_delete(cur: dbapi.Cursor, server_id: int, deleted_by: int) -> datetime 
     return cur.fetchone()[0]
 
 
-def live_ids(cur: dbapi.Cursor, server_ids: list[int]) -> set[int]:
-    """Which of these ids are servers a key may be given: not deleted and enabled."""
-    if not server_ids:
+def live_ids(cur: dbapi.Cursor, server_ids: list[int], admin_id: int | None) -> set[int]:
+    """Which of these ids are servers a user's key may be given: not deleted, enabled, and registered by
+    admin_id (the admin who created the user). No admin (None) means none."""
+    if not server_ids or admin_id is None:
         return set()
     placeholders = ", ".join("?" for _ in server_ids)
     cur.execute(
-        f'SELECT "id" FROM {_table()} WHERE "id" IN ({placeholders}) AND "is_deleted" = 0 AND "enabled" = 1',
-        tuple(server_ids),
+        f'SELECT "id" FROM {_table()} WHERE "id" IN ({placeholders}) AND "is_deleted" = 0 AND "enabled" = 1 '
+        f'AND "user_id" = ?',
+        (*server_ids, admin_id),
     )
     return {row[0] for row in cur.fetchall()}
 

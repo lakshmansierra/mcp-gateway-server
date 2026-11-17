@@ -122,7 +122,7 @@ python servers/server_1/server_1.py    # port 9001
 python servers/server_2/server_2.py    # port 9002
 python servers/server_3/server_3.py    # port 9003
 python mcp_gateway/main.py             # gateway on port 8080
-python clients/client_1/client.py      # admin key: lists and calls tools on every server
+python clients/client_1/client.py      # admin key: lists and calls tools on every server that admin registered
 python clients/client_2/client.py      # GPT-4.1 agent with API_KEY_GROUP_4 (server_4 only)
 python clients/client_3/client.py      # GPT-4.1 agent with API_KEY_GROUP_1 (server_1 only)
 ```
@@ -160,8 +160,10 @@ the backend (`POST /api/keys`, shown once). The table stores only each key's SHA
 what a client sends (`Authorization: Bearer <key>`) and looks it up. A key works while neither it nor its
 owner is deleted:
 
-- `all_servers = 1` (admins' keys) reaches every server;
-- `all_servers = 0` (users' keys) reaches only the servers mapped to it in the mapping table.
+- `all_servers = 1` (admins' keys) reaches only the servers that admin registered, enabled or disabled,
+  never another admin's servers;
+- `all_servers = 0` (users' keys) reaches only the servers mapped to it in the mapping table, only while
+  they are enabled, and only servers registered by the admin who created that user.
 
 Put the keys the sample clients should use into `clients/.env`.
 

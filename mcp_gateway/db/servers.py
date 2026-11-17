@@ -1,7 +1,8 @@
 """Read the MCP servers to proxy from the server table (MCP_SERVER_TABLE).
 
-Only live rows are loaded: not deleted (is_deleted = 0) and enabled (enabled = 1). The gateway only reads;
-the backend registers, edits and deletes the rows.
+Every row that isn't deleted (is_deleted = 0) is loaded, enabled or not: a disabled server stays connected so the
+admin who registered it can still use it (see ApiKeyConfig.can_access); everyone else is kept away from it.
+The gateway only reads; the backend registers, edits and deletes the rows.
 """
 
 from __future__ import annotations
@@ -25,20 +26,21 @@ def load_servers(cur: dbapi.Cursor, db: DatabaseSettings) -> list[UpstreamConfig
     """The live servers. A row the gateway can't use is skipped with a warning instead of stopping every other
     server."""
     cur.execute(
-        f'SELECT "server_name", "server_url", "transport", "timeout_seconds", "include_tools", "exclude_tools" '
-        f'FROM {db.table(db.server_table)} WHERE "is_deleted" = 0 AND "enabled" = 1 ORDER BY "id"'
+        f'SELECT "server_name", "server_url", "transport", "timeout_seconds", "include_tools", "exclude_tools", '
+        f'"enabled", "user_id" FROM {db.table(db.server_table)} WHERE "is_deleted" = 0 ORDER BY "id"'
     )
     servers: dict[str, UpstreamConfig] = {}
-    for name, url, transport, timeout, include, exclude in cur.fetchall():
+    for name, url, transport, timeout, include, exclude, enabled, owner_id in cur.fetchall():
         try:
             config = UpstreamConfig(
                 name=name,
                 url=url,
                 transport=transport,
-                enabled=True,
+                enabled=bool(enabled),
                 timeout_seconds=timeout,
                 include_tools=_split_tools(include) or [ALL_TOOLS],  # the column's default is '*'
                 exclude_tools=_split_tools(exclude),
+                owner_id=owner_id,
             )
         except ValidationError as exc:
             logger.warning("Skipping server '%s' from the server table: %s", name, exc.errors()[0]["msg"])

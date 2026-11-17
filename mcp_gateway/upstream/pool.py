@@ -17,7 +17,8 @@ which the gateway passes on to its own clients.
 
 The set of servers can change while the gateway runs: `UpstreamPool.apply` starts new servers, stops removed
 ones, reconnects servers whose URL, transport or timeout changed, and re-filters the catalog of servers whose
-tool filters changed (no reconnect needed).
+tool filters changed (no reconnect needed). Disabled servers stay connected (their owning admin may still use
+them); enabling or disabling one only changes who may see it, and tells listening clients to re-list.
 """
 
 from __future__ import annotations
@@ -310,6 +311,7 @@ class Upstream:
     def status(self) -> dict[str, Any]:
         return {
             "name": self.name,
+            "enabled": self.config.enabled,
             "url": self.config.url,
             "transport": self.config.transport,
             "connected": self.connected,
@@ -376,7 +378,7 @@ class UpstreamPool:
             return
         wanted = {c.name: c for c in configs}
         for name in [n for n in self.upstreams if n not in wanted]:
-            logger.info("Server '%s' was removed, disabled or renamed: disconnecting", name)
+            logger.info("Server '%s' was deleted or renamed: disconnecting", name)
             self._stop(name)
         for name, config in wanted.items():
             current = self.upstreams.get(name)
@@ -387,16 +389,35 @@ class UpstreamPool:
                 self._stop(name)
             else:
                 if current.config != config:
-                    logger.info(
-                        "Server '%s' tool filters changed: include=%s exclude=%s",
-                        name,
-                        config.include_tools,
-                        config.exclude_tools,
-                    )
+                    old = current.config
+                    if (old.include_tools, old.exclude_tools) != (config.include_tools, config.exclude_tools):
+                        logger.info(
+                            "Server '%s' tool filters changed: include=%s exclude=%s",
+                            name,
+                            config.include_tools,
+                            config.exclude_tools,
+                        )
+                    if old.enabled != config.enabled:
+                        logger.info(
+                            "Server '%s' was %s",
+                            name,
+                            "enabled: open to every key allowed to use it"
+                            if config.enabled
+                            else "disabled: only the admin who registered it can use it now",
+                        )
+                        if not config.enabled:
+                            self._announce(name)  # before the switch, so the clients losing it hear about it
                     current.update_filters(config)
+                    if config.enabled and not old.enabled:
+                        self._announce(name)  # after the switch, so the clients gaining it hear about it
                 continue
             upstream = self.upstreams[name] = Upstream(config, self.settings, self._on_change)
             self._start(upstream)
+
+    def _announce(self, name: str) -> None:
+        """Tell listening clients that a server's lists changed, so they re-list (who may see it changed)."""
+        if self._on_change is not None:
+            self._on_change(name, [ToolsListChanged(), ResourcesListChanged(), PromptsListChanged()])
 
     async def wait_until_ready(self, timeout: float) -> None:
         """Give upstreams a moment to connect at startup so the first tools/list is complete."""
