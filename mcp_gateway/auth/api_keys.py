@@ -17,7 +17,6 @@ from mcp_gateway.config.settings import ApiKeyConfig, AuthSettings
 
 logger = logging.getLogger(__name__)
 
-PUBLIC_PATHS = {"/health"}
 SCOPE_KEY = "gateway_api_key"
 
 
@@ -66,13 +65,14 @@ def _extract_key(scope: Scope) -> str | None:
 class ApiKeyMiddleware:
     """Rejects requests without a valid key; stores the matched key on the ASGI scope state."""
 
-    def __init__(self, app: ASGIApp, settings: AuthSettings, keys: KeyStore) -> None:
+    def __init__(self, app: ASGIApp, settings: AuthSettings, keys: KeyStore, public_paths: set[str]) -> None:
         self.app = app
         self.settings = settings
         self.keys = keys
+        self.public_paths = public_paths  # answered without a key (GATEWAY_HEALTH_PATH)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or not self.settings.enabled or scope["path"] in PUBLIC_PATHS:
+        if scope["type"] != "http" or not self.settings.enabled or scope["path"] in self.public_paths:
             await self.app(scope, receive, send)
             return
 

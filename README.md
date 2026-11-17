@@ -152,6 +152,8 @@ variables already set in the real environment take precedence. See
 | `GATEWAY_CHANGE_DEBOUNCE` | `1` | seconds to wait after a change notification |
 | `GATEWAY_CLIENT_SESSION_IDLE` | `300` | seconds before an unused client session closes |
 | `GATEWAY_DB_SYNC_INTERVAL` | `30` | seconds between re-reads of the servers and API keys in HANA |
+| `GATEWAY_HEALTH_PATH` | `/health` | route that answers without an API key (health checks) |
+| `GATEWAY_CLIENT_ID_HEADER` | `X-MCP-Client` | header naming the client (`<user>/<key>`) on its sessions to servers |
 
 **Client API keys** are not set in `.env` either: they are rows of the key table in HANA, created through
 the backend (`POST /api/keys`, shown once). The table stores only each key's SHA-256 hash; the gateway hashes
@@ -175,12 +177,15 @@ can't) and again every `GATEWAY_DB_SYNC_INTERVAL` seconds, so changes apply with
 
 `server_name` is the tool prefix: `server_1` gives `server_1__add`.
 
-| variable | meaning |
-|---|---|
-| `HANA_HOST`, `HANA_PORT`, `HANA_USER`, `HANA_PASSWORD`, `HANA_SCHEMA` | the HANA database (read-only use) |
-| `MCP_SERVER_TABLE` | the server table, e.g. `mcp_app_mgs` |
-| `MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE`, `MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE` | the key table and its key-to-server mapping |
-| `USER_TABLE` | the users, so a deleted user's keys stop working |
+| variable | fallback | meaning |
+|---|---|---|
+| `HANA_HOST`, `HANA_USER`, `HANA_PASSWORD`, `HANA_SCHEMA` | none: required | the HANA database (read-only use) |
+| `HANA_PORT` | `443` | HANA Cloud's SQL port |
+| `HANA_CONNECT_TIMEOUT`, `HANA_QUERY_TIMEOUT` | `10`, `30` | seconds before a HANA call gives up; the next re-read retries |
+| `MCP_SERVER_TABLE` | `mcp_app_mgs` | the server table |
+| `MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE` | `client_to_gateway_mcp_api_key_mgs` | the key table |
+| `MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE` | `client_to_gateway_mcp_api_key_mapping_mgs` | key-to-server mapping |
+| `USER_TABLE` | `user_mgs` | the users, so a deleted user's keys stop working |
 
 ## Connecting AI clients
 

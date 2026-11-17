@@ -8,7 +8,9 @@ environment); nothing else is:
     GATEWAY_STARTUP_CONNECT_TIMEOUT, GATEWAY_HEALTH_CHECK_INTERVAL,
     GATEWAY_CATALOG_TTL, GATEWAY_CHANGE_DEBOUNCE, GATEWAY_CLIENT_SESSION_IDLE,
     GATEWAY_DB_SYNC_INTERVAL                                            timers (seconds)
+    GATEWAY_HEALTH_PATH, GATEWAY_CLIENT_ID_HEADER                       health route; header naming the client to servers
     HANA_HOST, HANA_PORT, HANA_USER, HANA_PASSWORD, HANA_SCHEMA         the database
+    HANA_CONNECT_TIMEOUT, HANA_QUERY_TIMEOUT                            seconds before a HANA call gives up
     USER_TABLE, MCP_SERVER_TABLE,
     MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE,
     MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE                         the backend's tables
@@ -47,6 +49,8 @@ GATEWAY_FIELDS = {
     "GATEWAY_CHANGE_DEBOUNCE": "change_debounce",
     "GATEWAY_CLIENT_SESSION_IDLE": "client_session_idle",
     "GATEWAY_DB_SYNC_INTERVAL": "db_sync_interval",
+    "GATEWAY_HEALTH_PATH": "health_path",
+    "GATEWAY_CLIENT_ID_HEADER": "client_id_header",
 }
 DATABASE_FIELDS = {
     "HANA_HOST": "host",
@@ -54,11 +58,15 @@ DATABASE_FIELDS = {
     "HANA_USER": "user",
     "HANA_PASSWORD": "password",
     "HANA_SCHEMA": "schema_name",
+    "HANA_CONNECT_TIMEOUT": "connect_timeout",
+    "HANA_QUERY_TIMEOUT": "query_timeout",
     "USER_TABLE": "user_table",
     "MCP_SERVER_TABLE": "server_table",
     "MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE": "api_key_table",
     "MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE": "api_key_mapping_table",
 }
+# No default can be guessed for these: the gateway stops at startup if one is missing.
+REQUIRED_DATABASE_VARS = ("HANA_HOST", "HANA_USER", "HANA_PASSWORD", "HANA_SCHEMA")
 
 
 def _split_list(value: str) -> list[str]:
@@ -108,7 +116,7 @@ class ApiKeyConfig(BaseModel):
     """A client API key: a live row of the key table. Only its SHA-256 hash is known, never the key itself."""
 
     id: int
-    name: str  # "<user_name>/<key_name>": who is calling, in logs and in the X-MCP-Client header to servers
+    name: str  # "<user_name>/<key_name>": who is calling, in logs and in GATEWAY_CLIENT_ID_HEADER to servers
     key_hash: str = Field(repr=False)
     all_servers: bool  # 1 for admins' keys: every server
     servers: frozenset[str] = frozenset()  # otherwise: the server_names picked for it (the mapping table)
@@ -144,20 +152,43 @@ class GatewaySettings(BaseModel):
     # Seconds. How often the server and key tables are re-read, so servers and keys added, edited or deleted
     # in the backend take effect without restarting the gateway.
     db_sync_interval: float = Field(30.0, gt=0)
+    # Route that answers without an API key, for load balancers and Cloud Foundry health checks.
+    health_path: str = "/health"
+    # Header the gateway adds to each client's own session to a server, naming the client ("<user>/<key>").
+    client_id_header: str = "X-MCP-Client"
+
+    @field_validator("path", "health_path")
+    @classmethod
+    def _absolute_path(cls, v: str) -> str:
+        if not v.startswith("/"):
+            raise ValueError("must start with '/'")
+        return v
+
+    @field_validator("client_id_header")
+    @classmethod
+    def _header_name(cls, v: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9-]+", v):
+            raise ValueError("may only contain letters, digits and '-'")
+        return v
 
 
 class DatabaseSettings(BaseModel):
-    """Where the MCP servers and client API keys live: the backend's tables in SAP HANA. All required."""
+    """Where the MCP servers and client API keys live: the backend's tables in SAP HANA. host, user, password
+    and schema_name are required; the rest read .env too and fall back to the values here."""
 
     host: str
-    port: int
+    port: int = 443  # HANA Cloud's SQL port
     user: str
     password: str = Field(repr=False)
     schema_name: str
-    user_table: str
-    server_table: str
-    api_key_table: str
-    api_key_mapping_table: str
+    # Seconds. Without them a dead network could block a read forever, and the gateway would stop re-reading
+    # servers and keys (deleted keys would keep working). With them a stuck call fails and the next round retries.
+    connect_timeout: float = Field(10.0, gt=0)
+    query_timeout: float = Field(30.0, gt=0)
+    user_table: str = "user_mgs"
+    server_table: str = "mcp_app_mgs"
+    api_key_table: str = "client_to_gateway_mcp_api_key_mgs"
+    api_key_mapping_table: str = "client_to_gateway_mcp_api_key_mapping_mgs"
 
     @field_validator("schema_name", "user_table", "server_table", "api_key_table", "api_key_mapping_table")
     @classmethod
@@ -207,10 +238,12 @@ def load_config(env: Mapping[str, str] | None = None) -> GatewayConfig:
         for var, field_name in GATEWAY_FIELDS.items()
         if env.get(var, "") != ""
     }
-    missing = [var for var in DATABASE_FIELDS if env.get(var, "").strip() == ""]
+    missing = [var for var in REQUIRED_DATABASE_VARS if env.get(var, "").strip() == ""]
     if missing:
         raise ValueError(f"Missing database settings in .env: {', '.join(missing)}")
-    database = {field_name: env[var].strip() for var, field_name in DATABASE_FIELDS.items()}
+    database = {
+        field_name: env[var].strip() for var, field_name in DATABASE_FIELDS.items() if env.get(var, "").strip() != ""
+    }
     auth: dict[str, Any] = {}
     if env.get("GATEWAY_AUTH_ENABLED", "") != "":
         auth["enabled"] = env["GATEWAY_AUTH_ENABLED"]

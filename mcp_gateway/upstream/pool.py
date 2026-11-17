@@ -5,7 +5,7 @@ alive with periodic catalog refreshes, and reconnects with exponential backoff w
 the upstream goes away. That shared session is the gateway's own: it lists the catalog.
 
 Client requests (tools/call, resources/read, ...) use a separate session per client key,
-opened on first use and sent with `X-MCP-Client: <key name>`, so the server sees which
+opened on first use and sent with `<GATEWAY_CLIENT_ID_HEADER>: <key name>` (X-MCP-Client by default), so the server sees which
 client is calling and no state is shared between clients. Idle client sessions close
 after client_session_idle seconds; all of them close when the shared session drops.
 
@@ -42,8 +42,6 @@ from mcp.shared.subscriptions import PromptsListChanged, ResourcesListChanged, S
 from mcp_gateway.config.settings import GatewaySettings, UpstreamConfig
 
 logger = logging.getLogger(__name__)
-
-CLIENT_ID_HEADER = "X-MCP-Client"
 
 # Called with (server name, what changed) whenever a server's catalog changes.
 OnChange = Callable[[str, list[ServerEvent]], None]
@@ -122,7 +120,7 @@ class Upstream:
 
     def _transport(self, stack: AsyncExitStack, caller: str | None = None) -> Any:
         cfg = self.config
-        headers = {CLIENT_ID_HEADER: caller} if caller else None  # names the client this session calls for
+        headers = {self.settings.client_id_header: caller} if caller else None  # names the client this session calls for
         if cfg.transport == "sse":
             return sse_client(cfg.url, headers=headers, timeout=cfg.timeout_seconds)
         http_client = create_mcp_http_client(headers=headers)

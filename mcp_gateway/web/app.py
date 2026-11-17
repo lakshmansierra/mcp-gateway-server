@@ -1,4 +1,4 @@
-"""HTTP application: Streamable HTTP MCP endpoint + /health, behind API-key auth."""
+"""HTTP application: Streamable HTTP MCP endpoint + health route (GATEWAY_HEALTH_PATH), behind API-key auth."""
 
 from __future__ import annotations
 
@@ -46,6 +46,6 @@ def create_app(config: GatewayConfig) -> ASGIApp:
         streamable_http_path=settings.path,
         host=settings.host,
         transport_security=security,
-        custom_starlette_routes=[Route("/health", health, methods=["GET"])],
+        custom_starlette_routes=[Route(settings.health_path, health, methods=["GET"])],
     )
-    return ApiKeyMiddleware(app, config.auth, gateway.keys)
+    return ApiKeyMiddleware(app, config.auth, gateway.keys, public_paths={settings.health_path})

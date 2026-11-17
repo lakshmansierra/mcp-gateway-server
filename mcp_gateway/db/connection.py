@@ -6,11 +6,6 @@ from hdbcli import dbapi
 
 from mcp_gateway.config.settings import DatabaseSettings
 
-# Milliseconds. Without these a dead network can block a read forever, and the gateway would stop re-reading
-# servers and keys (deleted keys would keep working). With them a stuck read fails and the next round retries.
-CONNECT_TIMEOUT_MS = 10_000
-COMMUNICATION_TIMEOUT_MS = 30_000
-
 
 def connect(db: DatabaseSettings) -> dbapi.Connection:
     return dbapi.connect(
@@ -20,6 +15,7 @@ def connect(db: DatabaseSettings) -> dbapi.Connection:
         password=db.password,
         encrypt=True,  # HANA Cloud only accepts TLS connections
         sslValidateCertificate=True,
-        connectTimeout=CONNECT_TIMEOUT_MS,
-        communicationTimeout=COMMUNICATION_TIMEOUT_MS,
+        # HANA_CONNECT_TIMEOUT / HANA_QUERY_TIMEOUT are seconds; hdbcli takes milliseconds.
+        connectTimeout=int(db.connect_timeout * 1000),
+        communicationTimeout=int(db.query_timeout * 1000),
     )
