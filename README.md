@@ -1,7 +1,7 @@
 # mcp-gateway-server
 
 A single MCP endpoint for all AI clients. The gateway connects to every live MCP
-server listed in your `.env` file and exposes their tools, resources and prompts
+server listed in `mcp_gateway/.env` and exposes their tools, resources and prompts
 through one authenticated URL. Clients don't connect to upstream servers directly.
 
 ```
@@ -108,17 +108,19 @@ python -m venv .venv
 .venv/Scripts/activate          # Windows;  source .venv/bin/activate on Linux/macOS
 pip install -r requirements.txt
 
-cp .env.example .env     # then edit servers + keys
-python main.py           # reads .env; use --env-file <path> for another file
+cp mcp_gateway/.env.example mcp_gateway/.env   # gateway: servers + API keys + GATEWAY_*
+cp clients/.env.example clients/.env           # sample clients: gateway URL, their keys, AI Core
+cp backend/.env.example backend/.env           # admin/user backend: HANA, JWT
+python mcp_gateway/main.py   # or: cd mcp_gateway && python main.py; --env-file <path> for another file
 ```
 
-To try it locally, run the three sample servers (registered as `SERVER_<N>_URL` in `.env`), then the gateway, then a client:
+To try it locally, run the three sample servers (registered as `SERVER_<N>_URL` in `mcp_gateway/.env`), then the gateway, then a client:
 
 ```bash
 python servers/server_1/server_1.py    # port 9001
 python servers/server_2/server_2.py    # port 9002
 python servers/server_3/server_3.py    # port 9003
-python main.py                         # gateway on port 8080
+python mcp_gateway/main.py             # gateway on port 8080
 python clients/client_1/client.py      # admin key: lists and calls tools on every server
 python clients/client_2/client.py      # GPT-4.1 agent with API_KEY_GROUP_4 (server_4 only)
 python clients/client_3/client.py      # GPT-4.1 agent with API_KEY_GROUP_1 (server_1 only)
@@ -126,9 +128,10 @@ python clients/client_3/client.py      # GPT-4.1 agent with API_KEY_GROUP_1 (ser
 
 ## Configuration
 
-All settings are environment variables. The gateway loads them from `.env` (git-ignored);
+All settings are environment variables. The gateway loads them from `mcp_gateway/.env` (git-ignored);
 variables already set in the real environment take precedence. See
-[.env.example](.env.example) for a full example.
+[mcp_gateway/.env.example](mcp_gateway/.env.example) for a full example. The sample clients read
+`clients/.env` and the backend reads `backend/.env`, so each part can be deployed on its own.
 
 **Gateway:** every `GATEWAY_*` variable is optional; `.env` wins, and a missing one falls back to the value in code.
 
@@ -191,7 +194,7 @@ claude mcp add --transport http gateway https://gateway.example.com/mcp \
 
 **Local stdio** (no network auth; the client launches the gateway itself)
 ```json
-{ "command": "python", "args": ["/path/to/mcp-gateway-server/main.py", "--transport", "stdio"] }
+{ "command": "python", "args": ["/path/to/mcp-gateway-server/mcp_gateway/main.py", "--transport", "stdio"] }
 ```
 
 **Python**
@@ -201,7 +204,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client
 
 http = create_mcp_http_client(headers={"Authorization": "Bearer <key>"})
-async with Client(streamable_http_client("http://localhost:8080/mcp", http_client=http)) as c:
+async with Client(streamable_http_client("http://localhost:8080/mcp/gateway", http_client=http)) as c:
     print(await c.call_tool("math__add", {"a": 1, "b": 2}))
 ```
 
@@ -211,21 +214,21 @@ async with Client(streamable_http_client("http://localhost:8080/mcp", http_clien
 - Set `GATEWAY_ALLOWED_HOSTS` to the public hostname(s) to turn on DNS-rebinding protection.
 - MCP sessions are held in memory. If you run several replicas, use sticky sessions
   (keyed on the `Mcp-Session-Id` header).
-- Generate keys with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 
 ## Layout
 
 ```
-main.py         starts the gateway (http | stdio)
-gateway/
-  config.py     reads settings from environment variables, validation
-  upstream.py   upstream connections: supervisor, reconnect, catalog cache
-  server.py     MCP handlers: aggregate lists, route calls/reads/prompts
-  auth.py       API-key ASGI middleware + per-key upstream scoping
-  app.py        Starlette app: /mcp + /health
+mcp_gateway/     the gateway (deployable on its own; settings in mcp_gateway/.env)
+  main.py               starts the gateway (http | stdio)
+  config/settings.py    reads settings from environment variables, validation
+  upstream/pool.py      upstream connections: supervisor, reconnect, catalog cache
+  server/gateway.py     MCP handlers: aggregate lists, route calls/reads/prompts
+  auth/api_keys.py      API-key ASGI middleware + per-key upstream scoping
+  web/app.py            Starlette app: MCP endpoint + /health
 servers/
   server_1/ server_2/ server_3/   sample MCP servers (ports 9001-9003)
 clients/
   client_1/                 plain MCP client using the admin key
   client_2/ client_3/       GPT-4.1 agents (SAP Gen AI Hub) using server / group keys
+backend/        FastAPI admin/user API on SAP HANA (settings in backend/.env)
 ```

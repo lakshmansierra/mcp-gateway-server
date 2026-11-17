@@ -25,9 +25,9 @@ from mcp.server.subscriptions import ListenHandler
 from mcp.shared.exceptions import MCPError
 from mcp.shared.subscriptions import ServerEvent
 
-from gateway.auth import api_key_from_request
-from gateway.config import NAME_SEPARATOR, ApiKeyConfig, GatewayConfig
-from gateway.upstream import Upstream, UpstreamPool, UpstreamUnavailableError
+from mcp_gateway.auth.api_keys import api_key_from_request
+from mcp_gateway.config.settings import NAME_SEPARATOR, ApiKeyConfig, GatewayConfig
+from mcp_gateway.upstream.pool import Upstream, UpstreamPool, UpstreamUnavailableError
 
 logger = logging.getLogger(__name__)
 

@@ -10,9 +10,9 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.types import ASGIApp
 
-from gateway.auth import ApiKeyMiddleware
-from gateway.config import GatewayConfig
-from gateway.server import Gateway, build_server
+from mcp_gateway.auth.api_keys import ApiKeyMiddleware
+from mcp_gateway.config.settings import GatewayConfig
+from mcp_gateway.server.gateway import Gateway, build_server
 
 
 def create_app(config: GatewayConfig) -> ASGIApp:

@@ -35,7 +35,7 @@ from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp.shared.exceptions import MCPError
 from mcp.shared.subscriptions import PromptsListChanged, ResourcesListChanged, ServerEvent, ToolsListChanged
 
-from gateway.config import GatewaySettings, UpstreamConfig
+from mcp_gateway.config.settings import GatewaySettings, UpstreamConfig
 
 logger = logging.getLogger(__name__)
 

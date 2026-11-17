@@ -9,7 +9,7 @@ from typing import Any
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from gateway.config import ApiKeyConfig, AuthSettings
+from mcp_gateway.config.settings import ApiKeyConfig, AuthSettings
 
 logger = logging.getLogger(__name__)
 

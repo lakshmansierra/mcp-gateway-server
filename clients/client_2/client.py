@@ -30,7 +30,7 @@ from clients.client_2._util.file_ops import write_json
 from clients.client_2._llm.models_llm import agentic_transformer_func_llm
 
 load_dotenv()
-GATEWAY_URL = os.getenv("GATEWAY_URL", "http://127.0.0.1:8080/mcp")
+GATEWAY_URL = os.getenv("GATEWAY_URL", "http://127.0.0.1:8080/mcp/gateway")
 GATEWAY_API_KEY = os.getenv("API_KEY_GROUP_4")
 
 

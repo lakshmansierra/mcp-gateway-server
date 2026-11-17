@@ -1,4 +1,4 @@
-"""Backend settings, read from the project's .env (HANA credentials and table names)."""
+"""Backend settings, read from backend/.env (HANA credentials, table names, login settings)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
+ENV_FILE = Path(__file__).resolve().parent / ".env"  # backend/.env: the backend is deployed on its own
 
 # Table and schema names are put into SQL as quoted identifiers, so only allow plain names.
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_]+")

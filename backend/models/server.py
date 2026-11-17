@@ -1,6 +1,6 @@
 """Pydantic schemas for MCP servers (the server table).
 
-The rules match what the gateway accepts (gateway/config.py), so every saved server is one the gateway can load.
+The rules match what the gateway accepts (mcp_gateway/config/settings.py), so every saved server is one the gateway can load.
 """
 
 from __future__ import annotations

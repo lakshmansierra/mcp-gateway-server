@@ -1,4 +1,8 @@
-"""Start the MCP gateway: `python main.py [--env-file .env] [--transport http|stdio]`."""
+"""Start the MCP gateway: `python main.py [--env-file .env] [--transport http|stdio]`.
+
+Run it from inside this folder (`cd mcp_gateway && python main.py`) or from the project root
+(`python mcp_gateway/main.py`). Settings come from mcp_gateway/.env.
+"""
 
 from __future__ import annotations
 
@@ -7,10 +11,16 @@ import logging
 import sys
 from pathlib import Path
 
-import anyio
-from dotenv import load_dotenv
+GATEWAY_DIR = Path(__file__).resolve().parent
+# Run as a file, Python puts this folder on the import path. Drop it (so the config/, auth/, ... folders here can't
+# shadow other libraries' modules with the same names) and add the parent, so `mcp_gateway.*` imports work.
+sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != GATEWAY_DIR]
+sys.path.insert(0, str(GATEWAY_DIR.parent))
 
-from gateway.config import load_config
+import anyio  # noqa: E402
+from dotenv import load_dotenv  # noqa: E402
+
+from mcp_gateway.config.settings import load_config  # noqa: E402
 
 
 def main() -> None:
@@ -51,7 +61,7 @@ def main() -> None:
     if config.gateway.transport == "stdio":
         from mcp.server.stdio import stdio_server
 
-        from gateway.server import Gateway, build_server
+        from mcp_gateway.server.gateway import Gateway, build_server
 
         server = build_server(Gateway(config))
 
@@ -64,7 +74,7 @@ def main() -> None:
 
     import uvicorn
 
-    from gateway.app import create_app
+    from mcp_gateway.web.app import create_app
 
     if config.auth.enabled and not config.auth.api_keys:
         sys.exit("No API keys configured: set API_KEY_<NAME>=<secret> or GATEWAY_AUTH_ENABLED=false")
