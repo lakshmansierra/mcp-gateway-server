@@ -21,6 +21,7 @@ import anyio  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
 
 from mcp_gateway.config.settings import load_config  # noqa: E402
+from mcp_gateway.db import load_registry  # noqa: E402
 
 
 def main() -> None:
@@ -41,7 +42,10 @@ def main() -> None:
     args = parser.parse_args()
 
     load_dotenv(args.env_file)
-    config = load_config()
+    try:
+        config = load_config()
+    except ValueError as exc:  # includes pydantic's ValidationError
+        sys.exit(f"Invalid settings in {args.env_file}: {exc}")
     if args.host:
         config.gateway.host = args.host
     if args.port:
@@ -57,6 +61,21 @@ def main() -> None:
     )
     # Per-request HTTP logs from the upstream client would repeat on every health check.
     logging.getLogger("httpx2").setLevel(logging.WARNING)
+
+    # The servers and API keys are the live rows of the backend's tables in HANA. Without them the gateway can't
+    # do anything useful, so stop here if HANA can't be reached at startup (later, failed re-reads keep the old ones).
+    try:
+        registry = load_registry(config.database)
+    except Exception as exc:  # noqa: BLE001
+        sys.exit(f"Could not read the MCP servers and API keys from HANA (schema {config.database.schema_name}): {exc}")
+    config.upstreams, config.api_keys = registry.servers, registry.api_keys
+    log = logging.getLogger("mcp_gateway")
+    log.info(
+        "Loaded %d server(s) from HANA: %s",
+        len(config.upstreams),
+        ", ".join(u.name for u in config.upstreams) or "none yet (register them in the backend)",
+    )
+    log.info("Loaded %d API key(s) from HANA", len(config.api_keys))
 
     if config.gateway.transport == "stdio":
         from mcp.server.stdio import stdio_server
@@ -76,8 +95,9 @@ def main() -> None:
 
     from mcp_gateway.web.app import create_app
 
-    if config.auth.enabled and not config.auth.api_keys:
-        sys.exit("No API keys configured: set API_KEY_<NAME>=<secret> or GATEWAY_AUTH_ENABLED=false")
+    if config.auth.enabled and not config.api_keys:
+        # Not fatal: keys created in the backend are picked up on the next re-read, without a restart.
+        log.warning("No API keys in HANA yet: every client gets 401 until one is created in the backend")
 
     uvicorn.run(
         create_app(config),

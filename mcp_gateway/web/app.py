@@ -21,7 +21,10 @@ def create_app(config: GatewayConfig) -> ASGIApp:
     settings = config.gateway
 
     async def health(_: Request) -> JSONResponse:
-        upstreams = gateway.pool.status()
+        # Public (no API key), so only names and counts: no server URLs (they can be internal hosts), no error
+        # texts, and no client sessions (they name users and their keys). Logs have the details.
+        public = ("name", "connected", "tools", "resources", "prompts")
+        upstreams = [{k: u[k] for k in public} for u in gateway.pool.status()]
         healthy = any(u["connected"] for u in upstreams) or not upstreams
         return JSONResponse(
             {"status": "ok" if healthy else "degraded", "upstreams": upstreams},
@@ -45,4 +48,4 @@ def create_app(config: GatewayConfig) -> ASGIApp:
         transport_security=security,
         custom_starlette_routes=[Route("/health", health, methods=["GET"])],
     )
-    return ApiKeyMiddleware(app, config.auth)
+    return ApiKeyMiddleware(app, config.auth, gateway.keys)

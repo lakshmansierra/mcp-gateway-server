@@ -7,6 +7,10 @@ unchanged and routed back to the upstream that listed them.
 Change notifications: clients can open a `subscriptions/listen` stream. When a server's
 tools, resources or prompts change, the gateway tells each listening client, but only
 if its API key may use that server, so no client learns about servers it can't reach.
+
+Servers and API keys: both are the live rows of the backend's tables in HANA, re-read every
+GATEWAY_DB_SYNC_INTERVAL seconds, so servers and keys created, edited or deleted in the backend
+take effect without a restart.
 """
 
 from __future__ import annotations
@@ -25,8 +29,9 @@ from mcp.server.subscriptions import ListenHandler
 from mcp.shared.exceptions import MCPError
 from mcp.shared.subscriptions import ServerEvent
 
-from mcp_gateway.auth.api_keys import api_key_from_request
+from mcp_gateway.auth.api_keys import KeyStore, api_key_from_request
 from mcp_gateway.config.settings import NAME_SEPARATOR, ApiKeyConfig, GatewayConfig
+from mcp_gateway.db import load_registry
 from mcp_gateway.upstream.pool import Upstream, UpstreamPool, UpstreamUnavailableError
 
 logger = logging.getLogger(__name__)
@@ -69,18 +74,27 @@ class ChangeBus:
 
 
 class _ChangesVisibleTo:
-    """The bus one client's listen stream reads: only changes from servers its key may use."""
+    """The bus one client's listen stream reads: only changes from servers its key may use.
 
-    def __init__(self, bus: ChangeBus, key: ApiKeyConfig | None) -> None:
+    The key is looked up again for every event, so a stream opened before the key was deleted, or before its
+    servers changed, follows the key's current state instead of the one it had when the stream opened.
+    """
+
+    def __init__(self, bus: ChangeBus, key: ApiKeyConfig | None, keys: KeyStore) -> None:
         self._bus = bus
         self._key = key
+        self._keys = keys
 
     async def publish(self, event: ServerEvent) -> None:  # part of SubscriptionBus; the gateway publishes via ChangeBus
         raise NotImplementedError
 
     def subscribe(self, listener: Callable[[ServerEvent], None]) -> Callable[[], None]:
         def deliver(upstream: str, event: ServerEvent) -> None:
-            if self._key is None or self._key.can_access(upstream):
+            if self._key is None:  # auth off: sees everything
+                listener(event)
+                return
+            current = self._keys.get(self._key.id)  # None once the key is deleted
+            if current is not None and current.can_access(upstream):
                 listener(event)
 
         return self._bus.subscribe(deliver)
@@ -91,6 +105,24 @@ class Gateway:
         self.config = config
         self.changes = ChangeBus()
         self.pool = UpstreamPool(config.enabled_upstreams, config.gateway, on_change=self.changes.publish)
+        self.keys = KeyStore(config.api_keys)
+
+    async def sync_from_db(self) -> None:
+        """Re-read the server and key tables every GATEWAY_DB_SYNC_INTERVAL seconds and apply what changed. If
+        HANA can't be reached, the current servers and keys stay in use and the next round tries again."""
+        while True:
+            await anyio.sleep(self.config.gateway.db_sync_interval)
+            try:
+                registry = await anyio.to_thread.run_sync(load_registry, self.config.database, abandon_on_cancel=True)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not re-read HANA (keeping the current servers and keys): %s", exc)
+                continue
+            # Keys first: if applying the servers failed, a deleted key would otherwise keep working.
+            self.keys.replace(registry.api_keys)
+            try:
+                self.pool.apply(registry.servers)
+            except Exception:  # noqa: BLE001 - an error here must not stop the loop (or take the gateway down)
+                logger.exception("Could not apply the server list read from HANA; retrying next round")
 
     # ---- access control ---------------------------------------------------
 
@@ -253,7 +285,7 @@ class Gateway:
     ) -> types.SubscriptionsListenResult:
         """Serve one client's change stream, limited to the servers its key may use."""
         logger.info("subscriptions/listen opened by %s", _caller(ctx))
-        handler = ListenHandler(_ChangesVisibleTo(self.changes, api_key_from_request(ctx.request)))
+        handler = ListenHandler(_ChangesVisibleTo(self.changes, api_key_from_request(ctx.request), self.keys))
         return await handler(ctx, params)
 
     async def _forward_or_error(
@@ -284,19 +316,19 @@ def build_server(gateway: Gateway) -> Server[Any]:
     async def lifespan(_: Server[Any]) -> AsyncIterator[dict[str, Any]]:
         async with anyio.create_task_group() as tg:
             tg.start_soon(gateway.pool.run)
+            tg.start_soon(gateway.sync_from_db)
             await gateway.pool.wait_until_ready(gateway.config.gateway.startup_connect_timeout)
             try:
                 yield {"gateway": gateway}
             finally:
                 tg.cancel_scope.cancel()
 
-    upstream_names = ", ".join(gateway.pool.upstreams) or "none"
     return Server(
         gateway.config.gateway.name,
         version=gateway.config.gateway.version,
         instructions=(
             "This gateway aggregates several MCP servers. Tool and prompt names are "
-            f"prefixed with their server name and '{NAME_SEPARATOR}'. Connected servers: {upstream_names}."
+            f"prefixed with their server name and '{NAME_SEPARATOR}', e.g. '<server>{NAME_SEPARATOR}<tool>'."
         ),
         lifespan=lifespan,
         on_list_tools=gateway.list_tools,

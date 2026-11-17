@@ -1,48 +1,34 @@
-"""Gateway configuration, read from environment variables (optionally loaded from a .env file).
+"""Gateway configuration. Only these environment variables are read (from mcp_gateway/.env or the real
+environment); nothing else is:
 
-    GATEWAY_HOST, GATEWAY_PORT, ...           gateway settings
-    API_KEY_<NAME>=<secret>                     a client API key for every server
-    API_KEY_<NAME>_SERVERS=server_1,server_2    restrict that key to some MCP servers
+    GATEWAY_NAME, GATEWAY_VERSION, GATEWAY_TRANSPORT,
+    GATEWAY_HOST, GATEWAY_PORT, GATEWAY_PATH, GATEWAY_ALLOWED_HOSTS     how the gateway presents itself and listens
+    GATEWAY_LOG_LEVEL, GATEWAY_AUTH_ENABLED                             logging; require client API keys
+    GATEWAY_RECONNECT_INITIAL_DELAY, GATEWAY_RECONNECT_MAX_DELAY,
+    GATEWAY_STARTUP_CONNECT_TIMEOUT, GATEWAY_HEALTH_CHECK_INTERVAL,
+    GATEWAY_CATALOG_TTL, GATEWAY_CHANGE_DEBOUNCE, GATEWAY_CLIENT_SESSION_IDLE,
+    GATEWAY_DB_SYNC_INTERVAL                                            timers (seconds)
+    HANA_HOST, HANA_PORT, HANA_USER, HANA_PASSWORD, HANA_SCHEMA         the database
+    USER_TABLE, MCP_SERVER_TABLE,
+    MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE,
+    MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE                         the backend's tables
 
-Every MCP server behind the gateway needs all of these (they mirror the server table's columns,
-so the code holds no per-server defaults):
-    SERVER_<ID>_URL=https://...                 where the server is
-    SERVER_<ID>_TRANSPORT=streamable_http       or sse
-    SERVER_<ID>_TIMEOUT=60                      seconds to wait for each reply
-    SERVER_<ID>_ENABLED=true                    false = don't connect
-    SERVER_<ID>_INCLUDE_TOOLS=*                 full tool names to expose, comma-separated; * = all
-    SERVER_<ID>_EXCLUDE_TOOLS=delete_everything full tool names to hide from those (may be empty)
-
-SERVER_<ID> lowercased is the server's name and tool prefix, e.g. SERVER_1_URL -> "server_1" -> server_1__add.
+Everything else comes from HANA: the MCP servers and the client API keys are rows in those tables, managed
+through the backend, loaded at startup and re-read every GATEWAY_DB_SYNC_INTERVAL seconds (mcp_gateway/db/).
 """
 
 from __future__ import annotations
 
-import logging
 import os
 import re
 from collections.abc import Mapping
-from fnmatch import fnmatch
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
-logger = logging.getLogger(__name__)
-
 NAME_SEPARATOR = "__"
 ALL_TOOLS = "*"  # in _INCLUDE_TOOLS: expose every tool
 
-SERVER_PREFIX = "SERVER_"
-API_KEY_PREFIX = "API_KEY_"
-# Per-server setting suffixes -> UpstreamConfig field. Longest first so _INCLUDE_TOOLS wins over shorter matches.
-UPSTREAM_FIELDS = {
-    "_INCLUDE_TOOLS": "include_tools",
-    "_EXCLUDE_TOOLS": "exclude_tools",
-    "_TRANSPORT": "transport",
-    "_ENABLED": "enabled",
-    "_TIMEOUT": "timeout_seconds",
-    "_URL": "url",
-}
 LIST_FIELDS = {"include_tools", "exclude_tools", "allowed_hosts"}
 GATEWAY_FIELDS = {
     "GATEWAY_NAME": "name",
@@ -60,6 +46,18 @@ GATEWAY_FIELDS = {
     "GATEWAY_CATALOG_TTL": "catalog_ttl",
     "GATEWAY_CHANGE_DEBOUNCE": "change_debounce",
     "GATEWAY_CLIENT_SESSION_IDLE": "client_session_idle",
+    "GATEWAY_DB_SYNC_INTERVAL": "db_sync_interval",
+}
+DATABASE_FIELDS = {
+    "HANA_HOST": "host",
+    "HANA_PORT": "port",
+    "HANA_USER": "user",
+    "HANA_PASSWORD": "password",
+    "HANA_SCHEMA": "schema_name",
+    "USER_TABLE": "user_table",
+    "MCP_SERVER_TABLE": "server_table",
+    "MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE": "api_key_table",
+    "MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE": "api_key_mapping_table",
 }
 
 
@@ -70,7 +68,7 @@ def _split_list(value: str) -> list[str]:
 class UpstreamConfig(BaseModel):
     """One live MCP server that the gateway proxies to."""
 
-    # All required: each comes from SERVER_<ID>_<SETTING> in .env (later, a row in the server table).
+    # All required: each is a column of the server's row in the HANA server table.
     name: str
     url: str
     transport: Literal["streamable_http", "sse"]
@@ -107,14 +105,16 @@ class UpstreamConfig(BaseModel):
 
 
 class ApiKeyConfig(BaseModel):
-    """A client credential. `upstreams` restricts which upstreams this key may reach."""
+    """A client API key: a live row of the key table. Only its SHA-256 hash is known, never the key itself."""
 
-    name: str
-    key: str
-    upstreams: list[str] = Field(default_factory=lambda: ["*"])
+    id: int
+    name: str  # "<user_name>/<key_name>": who is calling, in logs and in the X-MCP-Client header to servers
+    key_hash: str = Field(repr=False)
+    all_servers: bool  # 1 for admins' keys: every server
+    servers: frozenset[str] = frozenset()  # otherwise: the server_names picked for it (the mapping table)
 
     def can_access(self, upstream: str) -> bool:
-        return any(fnmatch(upstream, p) for p in self.upstreams)
+        return self.all_servers or upstream in self.servers
 
 
 class GatewaySettings(BaseModel):
@@ -141,27 +141,48 @@ class GatewaySettings(BaseModel):
     change_debounce: float = Field(1.0, ge=0)
     # Seconds. A client's own session to a server closes after this long unused.
     client_session_idle: float = Field(300.0, gt=0)
+    # Seconds. How often the server and key tables are re-read, so servers and keys added, edited or deleted
+    # in the backend take effect without restarting the gateway.
+    db_sync_interval: float = Field(30.0, gt=0)
+
+
+class DatabaseSettings(BaseModel):
+    """Where the MCP servers and client API keys live: the backend's tables in SAP HANA. All required."""
+
+    host: str
+    port: int
+    user: str
+    password: str = Field(repr=False)
+    schema_name: str
+    user_table: str
+    server_table: str
+    api_key_table: str
+    api_key_mapping_table: str
+
+    @field_validator("schema_name", "user_table", "server_table", "api_key_table", "api_key_mapping_table")
+    @classmethod
+    def _plain_identifier(cls, v: str) -> str:
+        # Put into SQL as quoted identifiers, so only plain names are allowed.
+        if not re.fullmatch(r"[A-Za-z0-9_]+", v):
+            raise ValueError("may only contain letters, digits and '_'")
+        return v
+
+    def table(self, name: str) -> str:
+        """Fully qualified, quoted table name, e.g. "SCHEMA"."mcp_app_mgs"."""
+        return f'"{self.schema_name}"."{name}"'
 
 
 class AuthSettings(BaseModel):
     enabled: bool = True  # GATEWAY_AUTH_ENABLED; this is only the fallback
-    api_keys: list[ApiKeyConfig] = Field(default_factory=list)
-
-    @field_validator("api_keys")
-    @classmethod
-    def _unique_secrets(cls, v: list[ApiKeyConfig]) -> list[ApiKeyConfig]:
-        # The secret alone identifies the caller, so two keys sharing one would make access ambiguous.
-        secrets = [k.key for k in v]
-        dupes = sorted({k.name for k in v if secrets.count(k.key) > 1})
-        if dupes:
-            raise ValueError(f"API keys {dupes} use the same secret; every key needs its own value")
-        return v
+    # The keys themselves come from HANA (mcp_gateway/db/api_keys.py) and change while the gateway runs.
 
 
 class GatewayConfig(BaseModel):
     gateway: GatewaySettings = Field(default_factory=GatewaySettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
-    upstreams: list[UpstreamConfig] = Field(default_factory=list)
+    database: DatabaseSettings
+    upstreams: list[UpstreamConfig] = Field(default_factory=list)  # filled from the server table at startup
+    api_keys: list[ApiKeyConfig] = Field(default_factory=list)  # filled from the key table at startup
 
     @field_validator("upstreams")
     @classmethod
@@ -177,60 +198,20 @@ class GatewayConfig(BaseModel):
         return [u for u in self.upstreams if u.enabled]
 
 
-def _parse_upstreams(env: Mapping[str, str]) -> list[dict[str, Any]]:
-    upstreams: dict[str, dict[str, Any]] = {}
-    for var, value in env.items():
-        if not var.startswith(SERVER_PREFIX):
-            continue
-        for suffix, field_name in UPSTREAM_FIELDS.items():
-            if var.endswith(suffix) and len(var) > len(SERVER_PREFIX) + len(suffix):
-                name = var[: -len(suffix)].lower()
-                entry = upstreams.setdefault(name, {"name": name})
-                entry[field_name] = _split_list(value) if field_name in LIST_FIELDS else value
-                break
-        else:
-            # Other software may set SERVER_* variables (e.g. SERVER_NAME), so skip rather than fail.
-            logger.warning("Ignoring '%s': expected SERVER_<ID>_URL, _TRANSPORT, _TIMEOUT, ...", var)
-
-    missing = [
-        f"{name.upper()}{suffix}"
-        for name, entry in sorted(upstreams.items())
-        for suffix, field_name in UPSTREAM_FIELDS.items()
-        if field_name not in entry
-    ]
-    if missing:
-        raise ValueError(f"Missing server settings in .env: {', '.join(missing)}")
-    return sorted(upstreams.values(), key=lambda u: u["name"])
-
-
-def _parse_api_keys(env: Mapping[str, str]) -> list[dict[str, Any]]:
-    keys: dict[str, dict[str, Any]] = {}
-    for var, value in env.items():
-        if not var.startswith(API_KEY_PREFIX):
-            continue
-        rest = var[len(API_KEY_PREFIX) :]
-        if rest.endswith("_SERVERS"):
-            name = rest[: -len("_SERVERS")].lower()
-            keys.setdefault(name, {"name": name})["upstreams"] = _split_list(value)
-        else:
-            keys.setdefault(rest.lower(), {"name": rest.lower()})["key"] = value
-
-    missing = sorted(name for name, entry in keys.items() if not entry.get("key"))
-    if missing:
-        raise ValueError(f"API key(s) {missing} have _SERVERS set but no API_KEY_<NAME> secret")
-    return sorted(keys.values(), key=lambda k: k["name"])
-
-
 def load_config(env: Mapping[str, str] | None = None) -> GatewayConfig:
-    """Build the config from environment variables (defaults to os.environ)."""
+    """Build the config from environment variables (defaults to os.environ). The servers and API keys are
+    loaded separately, from HANA (mcp_gateway/db/)."""
     env = os.environ if env is None else env
     gateway = {
         field_name: _split_list(env[var]) if field_name in LIST_FIELDS else env[var]
         for var, field_name in GATEWAY_FIELDS.items()
         if env.get(var, "") != ""
     }
-    upstreams = _parse_upstreams(env)
-    auth: dict[str, Any] = {"api_keys": _parse_api_keys(env)}
+    missing = [var for var in DATABASE_FIELDS if env.get(var, "").strip() == ""]
+    if missing:
+        raise ValueError(f"Missing database settings in .env: {', '.join(missing)}")
+    database = {field_name: env[var].strip() for var, field_name in DATABASE_FIELDS.items()}
+    auth: dict[str, Any] = {}
     if env.get("GATEWAY_AUTH_ENABLED", "") != "":
         auth["enabled"] = env["GATEWAY_AUTH_ENABLED"]
-    return GatewayConfig.model_validate({"gateway": gateway, "auth": auth, "upstreams": upstreams})
+    return GatewayConfig.model_validate({"gateway": gateway, "auth": auth, "database": database})

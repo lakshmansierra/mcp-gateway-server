@@ -1,8 +1,12 @@
-"""API-key authentication for AI clients connecting to the gateway."""
+"""API-key authentication for AI clients connecting to the gateway.
+
+The keys are the live rows of the key table in HANA, which hold only each key's SHA-256 hash. A request's key
+is hashed the same way (as the backend does when it creates the key) and looked up by that hash.
+"""
 
 from __future__ import annotations
 
-import hmac
+import hashlib
 import json
 import logging
 from typing import Any
@@ -17,6 +21,40 @@ PUBLIC_PATHS = {"/health"}
 SCOPE_KEY = "gateway_api_key"
 
 
+def hash_api_key(key: str) -> str:
+    """Same as the backend's backend/security.py hash_api_key: what the key table stores."""
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+class KeyStore:
+    """The live API keys, replaced as a whole after every read of the key table."""
+
+    def __init__(self, keys: list[ApiKeyConfig] | None = None) -> None:
+        self._by_hash: dict[str, ApiKeyConfig] = {}
+        self._by_id: dict[int, ApiKeyConfig] = {}
+        self.replace(keys or [])
+
+    def replace(self, keys: list[ApiKeyConfig]) -> None:
+        old = {k.id: k for k in self._by_hash.values()}
+        new = {k.id: k for k in keys}
+        self._by_hash, self._by_id = {k.key_hash: k for k in keys}, new
+        added = sorted(new[i].name for i in new.keys() - old.keys())
+        removed = sorted(old[i].name for i in old.keys() - new.keys())
+        changed = sorted(k.name for i, k in new.items() if i in old and old[i] != k)  # rotated or servers changed
+        if old and (added or removed or changed):
+            logger.info("API keys changed: added %s, removed %s, changed %s", added, removed, changed)
+
+    def get(self, key_id: int) -> ApiKeyConfig | None:
+        """The key with this id as of the last read, or None if it was deleted since."""
+        return self._by_id.get(key_id)
+
+    def match(self, presented: str | None) -> ApiKeyConfig | None:
+        return self._by_hash.get(hash_api_key(presented)) if presented else None
+
+    def __len__(self) -> int:
+        return len(self._by_hash)
+
+
 def _extract_key(scope: Scope) -> str | None:
     headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
     auth = headers.get("authorization", "")
@@ -28,24 +66,17 @@ def _extract_key(scope: Scope) -> str | None:
 class ApiKeyMiddleware:
     """Rejects requests without a valid key; stores the matched key on the ASGI scope state."""
 
-    def __init__(self, app: ASGIApp, settings: AuthSettings) -> None:
+    def __init__(self, app: ASGIApp, settings: AuthSettings, keys: KeyStore) -> None:
         self.app = app
         self.settings = settings
-
-    def _match(self, presented: str | None) -> ApiKeyConfig | None:
-        if not presented:
-            return None
-        for cfg in self.settings.api_keys:
-            if hmac.compare_digest(cfg.key.encode(), presented.encode()):
-                return cfg
-        return None
+        self.keys = keys
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or not self.settings.enabled or scope["path"] in PUBLIC_PATHS:
             await self.app(scope, receive, send)
             return
 
-        key = self._match(_extract_key(scope))
+        key = self.keys.match(_extract_key(scope))
         if key is None:
             client = scope.get("client")
             logger.warning("Rejected unauthenticated request from %s to %s", client[0] if client else "?", scope["path"])

@@ -108,13 +108,14 @@ python -m venv .venv
 .venv/Scripts/activate          # Windows;  source .venv/bin/activate on Linux/macOS
 pip install -r requirements.txt
 
-cp mcp_gateway/.env.example mcp_gateway/.env   # gateway: servers + API keys + GATEWAY_*
+cp mcp_gateway/.env.example mcp_gateway/.env   # gateway: HANA (servers + API keys) + GATEWAY_*
 cp clients/.env.example clients/.env           # sample clients: gateway URL, their keys, AI Core
 cp backend/.env.example backend/.env           # admin/user backend: HANA, JWT
 python mcp_gateway/main.py   # or: cd mcp_gateway && python main.py; --env-file <path> for another file
 ```
 
-To try it locally, run the three sample servers (registered as `SERVER_<N>_URL` in `mcp_gateway/.env`), then the gateway, then a client:
+To try it locally, run the sample servers, register them in the backend (`POST /api/admin/servers`, e.g. `server_1` at
+`http://127.0.0.1:9001/mcp`), then start the gateway and a client:
 
 ```bash
 python servers/server_1/server_1.py    # port 9001
@@ -133,7 +134,8 @@ variables already set in the real environment take precedence. See
 [mcp_gateway/.env.example](mcp_gateway/.env.example) for a full example. The sample clients read
 `clients/.env` and the backend reads `backend/.env`, so each part can be deployed on its own.
 
-**Gateway:** every `GATEWAY_*` variable is optional; `.env` wins, and a missing one falls back to the value in code.
+**Gateway:** the gateway reads only the variables below plus the HANA ones further down; nothing else, from
+`.env` or the real environment. Each `GATEWAY_*` one is optional and falls back to the value in code.
 
 | variable | fallback | meaning |
 |---|---|---|
@@ -149,27 +151,36 @@ variables already set in the real environment take precedence. See
 | `GATEWAY_CATALOG_TTL` | `30` | seconds before a list request re-fetches the catalog |
 | `GATEWAY_CHANGE_DEBOUNCE` | `1` | seconds to wait after a change notification |
 | `GATEWAY_CLIENT_SESSION_IDLE` | `300` | seconds before an unused client session closes |
+| `GATEWAY_DB_SYNC_INTERVAL` | `30` | seconds between re-reads of the servers and API keys in HANA |
 
-**Client API keys:**
+**Client API keys** are not set in `.env` either: they are rows of the key table in HANA, created through
+the backend (`POST /api/keys`, shown once). The table stores only each key's SHA-256 hash; the gateway hashes
+what a client sends (`Authorization: Bearer <key>`) and looks it up. A key works while neither it nor its
+owner is deleted:
+
+- `all_servers = 1` (admins' keys) reaches every server;
+- `all_servers = 0` (users' keys) reaches only the servers mapped to it in the mapping table.
+
+Put the keys the sample clients should use into `clients/.env`.
+
+**MCP servers** are not set in `.env`: they are the rows of the server table in SAP HANA, registered,
+edited and deleted through the backend. The gateway reads the servers and keys at startup (and stops if it
+can't) and again every `GATEWAY_DB_SYNC_INTERVAL` seconds, so changes apply without a restart:
+
+- a new row connects; a deleted or disabled row disconnects and its tools disappear;
+- a changed `server_url`, `transport` or `timeout_seconds` reconnects;
+- a changed `include_tools` / `exclude_tools` re-filters the tools on the open connection;
+- a new, deleted, rotated or re-mapped API key takes effect on the next re-read;
+- if HANA can't be reached on a re-read, the current servers and keys stay in use.
+
+`server_name` is the tool prefix: `server_1` gives `server_1__add`.
 
 | variable | meaning |
 |---|---|
-| `API_KEY_<NAME>` | A key clients send as `Authorization: Bearer <key>`; without `_SERVERS` it reaches every server (admin) |
-| `API_KEY_<NAME>_SERVERS` | Makes the key a group: comma-separated servers (or globs) it may reach, one or many |
-
-**MCP servers.** `SERVER_<ID>` in lowercase becomes the server's name and tool prefix, so
-`SERVER_1_URL` gives tools named `server_1__...`.
-
-Every server needs all six of these; the code has no per-server defaults (they mirror the server table's columns).
-
-| variable | example | meaning |
-|---|---|---|
-| `SERVER_<ID>_URL` | `http://127.0.0.1:9001/mcp` | The server's live MCP URL |
-| `SERVER_<ID>_TRANSPORT` | `streamable_http` | `streamable_http` or `sse` (older servers) |
-| `SERVER_<ID>_TIMEOUT` | `60` | Seconds to wait for each reply |
-| `SERVER_<ID>_ENABLED` | `true` | `false` turns the server off without deleting it |
-| `SERVER_<ID>_INCLUDE_TOOLS` | `*` | Full tool names to expose, comma-separated; `*` = all tools |
-| `SERVER_<ID>_EXCLUDE_TOOLS` | `delete_everything` | Full tool names to remove from the included ones; may be empty |
+| `HANA_HOST`, `HANA_PORT`, `HANA_USER`, `HANA_PASSWORD`, `HANA_SCHEMA` | the HANA database (read-only use) |
+| `MCP_SERVER_TABLE` | the server table, e.g. `mcp_app_mgs` |
+| `MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE`, `MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE` | the key table and its key-to-server mapping |
+| `USER_TABLE` | the users, so a deleted user's keys stop working |
 
 ## Connecting AI clients
 
@@ -221,6 +232,7 @@ async with Client(streamable_http_client("http://localhost:8080/mcp/gateway", ht
 mcp_gateway/     the gateway (deployable on its own; settings in mcp_gateway/.env)
   main.py               starts the gateway (http | stdio)
   config/settings.py    reads settings from environment variables, validation
+  db/                   loads the live servers and API keys from HANA
   upstream/pool.py      upstream connections: supervisor, reconnect, catalog cache
   server/gateway.py     MCP handlers: aggregate lists, route calls/reads/prompts
   auth/api_keys.py      API-key ASGI middleware + per-key upstream scoping
