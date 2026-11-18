@@ -154,6 +154,8 @@ variables already set in the real environment take precedence. See
 | `GATEWAY_DB_SYNC_INTERVAL` | `30` | seconds between re-reads of the servers and API keys in HANA |
 | `GATEWAY_HEALTH_PATH` | `/health` | route that answers without an API key (health checks) |
 | `GATEWAY_CLIENT_ID_HEADER` | `X-MCP-Client` | header naming the client (`<user>/<key>`) on its sessions to servers |
+| `GATEWAY_RELOAD_PATH` | `/internal/reload` | route the backend calls after a change, so it applies at once |
+| `GATEWAY_RELOAD_SECRET` | empty (off) | secret the backend must send to that route; same value in `backend/.env` |
 
 **Client API keys** are not set in `.env` either: they are rows of the key table in HANA, created through
 the backend (`POST /api/keys`, shown once). The table stores only each key's SHA-256 hash; the gateway hashes
@@ -169,7 +171,9 @@ Put the keys the sample clients should use into `clients/.env`.
 
 **MCP servers** are not set in `.env`: they are the rows of the server table in SAP HANA, registered,
 edited and deleted through the backend. The gateway reads the servers and keys at startup (and stops if it
-can't) and again every `GATEWAY_DB_SYNC_INTERVAL` seconds, so changes apply without a restart:
+can't) and again every `GATEWAY_DB_SYNC_INTERVAL` seconds, so changes apply without a restart. The backend also calls the
+gateway's reload route right after each change (`GATEWAY_RELOAD_URL` + `GATEWAY_RELOAD_SECRET` in
+`backend/.env`), so they normally apply within about a second; the periodic re-read is the fallback:
 
 - a new row connects; a deleted or disabled row disconnects and its tools disappear;
 - a changed `server_url`, `transport` or `timeout_seconds` reconnects;

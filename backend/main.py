@@ -19,6 +19,7 @@ from hdbcli import dbapi
 
 from backend.config import get_settings
 from backend.db import get_db
+from backend.gateway_notify import notify_gateway_on_change
 from backend.routes import admin, api_keys, me, servers, user
 
 app = FastAPI(title="MCP Gateway Backend", version="0.1.0")
@@ -30,6 +31,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# After a change to servers, keys or users, tell the gateway to re-read HANA at once (GATEWAY_RELOAD_URL).
+app.middleware("http")(notify_gateway_on_change)
 
 app.include_router(admin.router)
 app.include_router(user.router)

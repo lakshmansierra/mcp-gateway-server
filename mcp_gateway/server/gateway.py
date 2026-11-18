@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass, field
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager
 from typing import Any, TypeVar
@@ -105,6 +106,14 @@ class _ChangesVisibleTo:
         return self._bus.subscribe(deliver)
 
 
+@dataclass
+class ReloadRound:
+    """One re-read of HANA, which reload requests can wait for."""
+
+    done: anyio.Event = field(default_factory=anyio.Event)
+    ok: bool = False
+
+
 class Gateway:
     def __init__(self, config: GatewayConfig) -> None:
         self.config = config
@@ -112,23 +121,39 @@ class Gateway:
         # Disabled servers are connected too: their owning admin may still use them (ApiKeyConfig.can_access).
         self.pool = UpstreamPool(config.upstreams, config.gateway, on_change=self.changes.publish)
         self.keys = KeyStore(config.api_keys)
+        self._reload_requested = anyio.Event()
+        self._next_round = ReloadRound()
 
     async def sync_from_db(self) -> None:
-        """Re-read the server and key tables every GATEWAY_DB_SYNC_INTERVAL seconds and apply what changed. If
-        HANA can't be reached, the current servers and keys stay in use and the next round tries again."""
+        """Re-read the server and key tables and apply what changed: every GATEWAY_DB_SYNC_INTERVAL seconds, and
+        at once when the backend asks (request_reload). If HANA can't be reached, the current servers and keys
+        stay in use and the next round tries again."""
         while True:
-            await anyio.sleep(self.config.gateway.db_sync_interval)
+            with anyio.move_on_after(self.config.gateway.db_sync_interval):
+                await self._reload_requested.wait()
+            # Reset before reading: a request that arrives while this round reads gets a round of its own, so a
+            # change committed after this read began is never missed.
+            self._reload_requested = anyio.Event()
+            this_round, self._next_round = self._next_round, ReloadRound()
             try:
                 registry = await anyio.to_thread.run_sync(load_registry, self.config.database, abandon_on_cancel=True)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Could not re-read HANA (keeping the current servers and keys): %s", exc)
-                continue
-            # Keys first: if applying the servers failed, a deleted key would otherwise keep working.
-            self.keys.replace(registry.api_keys)
-            try:
+                # Keys first: if applying the servers failed, a deleted key would otherwise keep working.
+                self.keys.replace(registry.api_keys)
                 self.pool.apply(registry.servers)
-            except Exception:  # noqa: BLE001 - an error here must not stop the loop (or take the gateway down)
-                logger.exception("Could not apply the server list read from HANA; retrying next round")
+                this_round.ok = True
+            except Exception as exc:  # noqa: BLE001 - nothing may stop this loop (or take the gateway down)
+                logger.warning("Could not re-read HANA (keeping the current servers and keys): %s", exc)
+            finally:
+                this_round.done.set()
+
+    async def request_reload(self, wait: float) -> ReloadRound | None:
+        """Ask for a re-read now and wait up to `wait` seconds for it. None if it didn't finish in time (it still
+        runs and applies on its own)."""
+        this_round = self._next_round
+        self._reload_requested.set()
+        with anyio.move_on_after(wait):
+            await this_round.done.wait()
+        return this_round if this_round.done.is_set() else None
 
     # ---- access control ---------------------------------------------------
 

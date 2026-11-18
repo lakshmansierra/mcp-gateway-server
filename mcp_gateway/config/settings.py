@@ -9,6 +9,7 @@ environment); nothing else is:
     GATEWAY_CATALOG_TTL, GATEWAY_CHANGE_DEBOUNCE, GATEWAY_CLIENT_SESSION_IDLE,
     GATEWAY_DB_SYNC_INTERVAL                                            timers (seconds)
     GATEWAY_HEALTH_PATH, GATEWAY_CLIENT_ID_HEADER                       health route; header naming the client to servers
+    GATEWAY_RELOAD_PATH, GATEWAY_RELOAD_SECRET                          route the backend calls after a change
     HANA_HOST, HANA_PORT, HANA_USER, HANA_PASSWORD, HANA_SCHEMA         the database
     HANA_CONNECT_TIMEOUT, HANA_QUERY_TIMEOUT                            seconds before a HANA call gives up
     USER_TABLE, MCP_SERVER_TABLE,
@@ -51,6 +52,8 @@ GATEWAY_FIELDS = {
     "GATEWAY_DB_SYNC_INTERVAL": "db_sync_interval",
     "GATEWAY_HEALTH_PATH": "health_path",
     "GATEWAY_CLIENT_ID_HEADER": "client_id_header",
+    "GATEWAY_RELOAD_PATH": "reload_path",
+    "GATEWAY_RELOAD_SECRET": "reload_secret",
 }
 DATABASE_FIELDS = {
     "HANA_HOST": "host",
@@ -175,8 +178,13 @@ class GatewaySettings(BaseModel):
     health_path: str = "/health"
     # Header the gateway adds to each client's own session to a server, naming the client ("<user>/<key>").
     client_id_header: str = "X-MCP-Client"
+    # The backend calls POST <reload_path> (Authorization: Bearer <reload_secret>) right after it changes a
+    # server, key or user, so the gateway re-reads HANA at once instead of at the next db_sync_interval.
+    # No secret (the default) = the route is off and only the periodic re-read applies changes.
+    reload_path: str = "/internal/reload"
+    reload_secret: str | None = Field(None, repr=False)
 
-    @field_validator("path", "health_path")
+    @field_validator("path", "health_path", "reload_path")
     @classmethod
     def _absolute_path(cls, v: str) -> str:
         if not v.startswith("/"):

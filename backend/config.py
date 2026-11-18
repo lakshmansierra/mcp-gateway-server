@@ -37,6 +37,13 @@ def _jwt_secret() -> str:
     return value
 
 
+def _reload_url() -> str | None:
+    value = os.getenv("GATEWAY_RELOAD_URL", "").strip() or "http://127.0.0.1:8080/internal/reload"
+    if not value.startswith(("http://", "https://")):
+        raise RuntimeError("GATEWAY_RELOAD_URL must start with http:// or https://")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     hana_host: str
@@ -53,6 +60,11 @@ class Settings:
     jwt_secret: str
     jwt_expire_minutes: int
     admin_register_key: str | None  # None = admin registration is switched off
+    # After a change to servers, keys or users, POST here so the gateway re-reads HANA at once. No URL or no
+    # secret = off: the gateway then applies changes at its next periodic re-read.
+    gateway_reload_url: str | None
+    gateway_reload_secret: str | None
+    gateway_reload_timeout: float  # seconds to wait for the gateway's answer (the call runs in the background)
 
     def table(self, name: str) -> str:
         """Fully qualified, quoted table name, e.g. "SCHEMA"."user_mgs"."""
@@ -78,4 +90,7 @@ def get_settings() -> Settings:
         jwt_secret=_jwt_secret(),
         jwt_expire_minutes=int(os.getenv("JWT_EXPIRE_MINUTES", "480")),
         admin_register_key=os.getenv("ADMIN_REGISTER_KEY", "").strip() or None,
+        gateway_reload_url=_reload_url(),
+        gateway_reload_secret=os.getenv("GATEWAY_RELOAD_SECRET", "").strip() or None,
+        gateway_reload_timeout=float(os.getenv("GATEWAY_RELOAD_TIMEOUT", "").strip() or 10),
     )
