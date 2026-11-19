@@ -1,0 +1,59 @@
+# Cloud Foundry manifest for the MCP gateway (Streamable HTTP + SAP HANA).
+# Holds secrets, so it is git-ignored. From this folder: cf push
+applications:
+  - name: mcp-gateway-server
+    path: .
+    buildpacks:
+      - python_buildpack           # Python version from runtime.txt, packages from requirements.txt
+    memory: 512M
+    disk_quota: 1G
+    instances: 1                   # one instance: client sessions live in memory, so don't scale out
+    # The code imports itself as `mcp_gateway.*`, but CF unpacks this folder as /home/vcap/app, so link it as
+    # `mcp_gateway`. Host and port come from here (CF assigns $PORT), not from GATEWAY_HOST / GATEWAY_PORT.
+    command: >-
+      mkdir -p /tmp/pkg && ln -sfn "$HOME" /tmp/pkg/mcp_gateway &&
+      PYTHONPATH=/tmp/pkg${PYTHONPATH:+:$PYTHONPATH}
+      exec python -m mcp_gateway.main --transport http --host 0.0.0.0 --port "$PORT"
+    # Port check, not /health: /health answers 503 while every MCP server is down, and CF would restart the gateway.
+    health-check-type: port
+    # Uncomment to pin a hostname instead of the default <name>.<your-cf-domain>:
+    # routes:
+    #   - route: mcp-gateway.<your-cf-domain>
+    env:
+      # Settings come from here, not mcp_gateway/.env (.cfignore keeps .env out of the push).
+      # Values copied from mcp_gateway/.env; keep the two in step.
+      GATEWAY_NAME: "mcp-gateway"
+      GATEWAY_VERSION: "1.0.0"
+      GATEWAY_TRANSPORT: "http"
+      GATEWAY_PATH: "/mcp/gateway"
+      GATEWAY_ALLOWED_HOSTS: ""
+      GATEWAY_LOG_LEVEL: "INFO"
+      GATEWAY_AUTH_ENABLED: "true"
+      GATEWAY_RECONNECT_INITIAL_DELAY: "1"
+      GATEWAY_RECONNECT_MAX_DELAY: "60"
+      GATEWAY_STARTUP_CONNECT_TIMEOUT: "10"
+      GATEWAY_HEALTH_CHECK_INTERVAL: "30"
+      GATEWAY_CATALOG_TTL: "30"
+      GATEWAY_CHANGE_DEBOUNCE: "1"
+      GATEWAY_CLIENT_SESSION_IDLE: "300"
+      GATEWAY_DB_SYNC_INTERVAL: "30"
+      GATEWAY_HEALTH_PATH: "/health"
+      GATEWAY_CLIENT_ID_HEADER: "X-MCP-Client"
+      GATEWAY_RELOAD_PATH: "/internal/reload"
+      GATEWAY_RELOAD_SECRET: "bDy5txcuYSFaF_HEb3X_OoAG1cKrsf5oF0dA1pMNws0k-QaC_63h1juupI7ubkEX"
+      GATEWAY_USAGE_FLUSH_INTERVAL: "5"
+      GATEWAY_USAGE_BUFFER_MAX: "10000"
+      HANA_CONNECT_TIMEOUT: "10"
+      HANA_QUERY_TIMEOUT: "30"
+      HANA_HOST: "fdddfefe-e600-4b7f-b032-4f8fd05ec060.hna0.prod-us10.hanacloud.ondemand.com"
+      HANA_PORT: "443"
+      HANA_USER: "AI_USE_CASES_HDI_DB_1_9YUM85CO7FKDBO5H0FRK2Q2VA_RT"
+      HANA_PASSWORD: "Tn2FxjyBoXe6c.xQagv6lizP7SGgqd8ZSg4gmHGakSryuDH5vOAemDRqsr-jovT7Ov2c_oxC.tOHET1BrLuz895OMHYke_WJqlX_xSjA85.N0yjn.X5GZ.uo8L0pXH40"
+      HANA_SCHEMA: "AI_USE_CASES_HDI_DB_1"
+      USER_TABLE: "user_mgs"
+      MCP_SERVER_TABLE: "mcp_app_mgs"
+      MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE: "client_to_gateway_mcp_api_key_mgs"
+      MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE: "client_to_gateway_mcp_api_key_mapping_mgs"
+      MCP_TOOL_TABLE: "tools_mgs"
+      MCP_TOOL_CHANGE_TABLE: "tool_changes_mgs"
+      MCP_TOOL_CALL_TABLE: "tool_calls_mgs"
