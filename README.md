@@ -1,7 +1,7 @@
 # mcp-gateway-server
 
 A single MCP endpoint for all AI clients. The gateway connects to every live MCP
-server listed in your `.env` file and exposes their tools, resources and prompts
+server listed in `mcp_gateway/.env` and exposes their tools, resources and prompts
 through one authenticated URL. Clients don't connect to upstream servers directly.
 
 ```
@@ -39,6 +39,9 @@ through one authenticated URL. Clients don't connect to upstream servers directl
 - **Resilience.** Each upstream has its own supervisor that health-checks the connection
   every 30s and reconnects with exponential backoff. If one upstream is down, the
   others keep working, and calls to the down server get a clear error.
+- **Tool usage in HANA.** Every server's tools and how they change over time, and every tool call
+  (who, when, how long, ok / error / timeout), are written to three HANA tables in the background.
+  See [Tool usage](#tool-usage).
 - **Configured by environment variables.** Settings come from a `.env` file or the real environment.
 - **Transports.** HTTP for remote clients; stdio for local clients that launch the gateway as a subprocess.
 
@@ -108,29 +111,34 @@ python -m venv .venv
 .venv/Scripts/activate          # Windows;  source .venv/bin/activate on Linux/macOS
 pip install -r requirements.txt
 
-cp .env.example .env     # then edit servers + keys
-python main.py           # reads .env; use --env-file <path> for another file
+cp mcp_gateway/.env.example mcp_gateway/.env   # gateway: HANA (servers + API keys) + GATEWAY_*
+cp clients/.env.example clients/.env           # sample clients: gateway URL, their keys, AI Core
+cp backend/.env.example backend/.env           # admin/user backend: HANA, JWT
+python mcp_gateway/main.py   # or: cd mcp_gateway && python main.py; --env-file <path> for another file
 ```
 
-To try it locally, run the three sample servers (registered as `SERVER_<N>_URL` in `.env`), then the gateway, then a client:
+To try it locally, run the sample servers, register them in the backend (`POST /api/admin/servers`, e.g. `server_1` at
+`http://127.0.0.1:9001/mcp`), then start the gateway and a client:
 
 ```bash
 python servers/server_1/server_1.py    # port 9001
 python servers/server_2/server_2.py    # port 9002
 python servers/server_3/server_3.py    # port 9003
-python main.py                         # gateway on port 8080
-python clients/client_1/client.py      # admin key: lists and calls tools on every server
+python mcp_gateway/main.py             # gateway on port 8080
+python clients/client_1/client.py      # admin key: lists and calls tools on every server that admin registered
 python clients/client_2/client.py      # GPT-4.1 agent with API_KEY_GROUP_4 (server_4 only)
 python clients/client_3/client.py      # GPT-4.1 agent with API_KEY_GROUP_1 (server_1 only)
 ```
 
 ## Configuration
 
-All settings are environment variables. The gateway loads them from `.env` (git-ignored);
+All settings are environment variables. The gateway loads them from `mcp_gateway/.env` (git-ignored);
 variables already set in the real environment take precedence. See
-[.env.example](.env.example) for a full example.
+[mcp_gateway/.env.example](mcp_gateway/.env.example) for a full example. The sample clients read
+`clients/.env` and the backend reads `backend/.env`, so each part can be deployed on its own.
 
-**Gateway:** every `GATEWAY_*` variable is optional; `.env` wins, and a missing one falls back to the value in code.
+**Gateway:** the gateway reads only the variables below plus the HANA ones further down; nothing else, from
+`.env` or the real environment. Each `GATEWAY_*` one is optional and falls back to the value in code.
 
 | variable | fallback | meaning |
 |---|---|---|
@@ -146,27 +154,77 @@ variables already set in the real environment take precedence. See
 | `GATEWAY_CATALOG_TTL` | `30` | seconds before a list request re-fetches the catalog |
 | `GATEWAY_CHANGE_DEBOUNCE` | `1` | seconds to wait after a change notification |
 | `GATEWAY_CLIENT_SESSION_IDLE` | `300` | seconds before an unused client session closes |
+| `GATEWAY_DB_SYNC_INTERVAL` | `30` | seconds between re-reads of the servers and API keys in HANA |
+| `GATEWAY_HEALTH_PATH` | `/health` | route that answers without an API key (health checks) |
+| `GATEWAY_CLIENT_ID_HEADER` | `X-MCP-Client` | header naming the client (`<user>/<key>`) on its sessions to servers |
+| `GATEWAY_RELOAD_PATH` | `/internal/reload` | route the backend calls after a change, so it applies at once |
+| `GATEWAY_RELOAD_SECRET` | empty (off) | secret the backend must send to that route; same value in `backend/.env` |
+| `GATEWAY_USAGE_FLUSH_INTERVAL` | `5` | seconds between writes of tool usage to HANA |
+| `GATEWAY_USAGE_BUFFER_MAX` | `10000` | tool calls that may wait while HANA can't be reached; beyond that the oldest are dropped |
 
-**Client API keys:**
+**Client API keys** are not set in `.env` either: they are rows of the key table in HANA, created through
+the backend (`POST /api/keys`, shown once). The table stores only each key's SHA-256 hash; the gateway hashes
+what a client sends (`Authorization: Bearer <key>`) and looks it up. A key works while neither it nor its
+owner is deleted:
 
-| variable | meaning |
-|---|---|
-| `API_KEY_<NAME>` | A key clients send as `Authorization: Bearer <key>`; without `_SERVERS` it reaches every server (admin) |
-| `API_KEY_<NAME>_SERVERS` | Makes the key a group: comma-separated servers (or globs) it may reach, one or many |
+- `all_servers = 1` (admins' keys) reaches only the servers that admin registered, enabled or disabled,
+  never another admin's servers;
+- `all_servers = 0` (users' keys) reaches only the servers mapped to it in the mapping table, only while
+  they are enabled, and only servers registered by the admin who created that user.
 
-**MCP servers.** `SERVER_<ID>` in lowercase becomes the server's name and tool prefix, so
-`SERVER_1_URL` gives tools named `server_1__...`.
+Put the keys the sample clients should use into `clients/.env`.
 
-Every server needs all six of these; the code has no per-server defaults (they mirror the server table's columns).
+**MCP servers** are not set in `.env`: they are the rows of the server table in SAP HANA, registered,
+edited and deleted through the backend. The gateway reads the servers and keys at startup (and stops if it
+can't) and again every `GATEWAY_DB_SYNC_INTERVAL` seconds, so changes apply without a restart. The backend also calls the
+gateway's reload route right after each change (`GATEWAY_RELOAD_URL` + `GATEWAY_RELOAD_SECRET` in
+`backend/.env`), so they normally apply within about a second; the periodic re-read is the fallback:
 
-| variable | example | meaning |
+- a new row connects; a deleted or disabled row disconnects and its tools disappear;
+- a changed `server_url`, `transport` or `timeout_seconds` reconnects;
+- a changed `include_tools` / `exclude_tools` re-filters the tools on the open connection;
+- a new, deleted, rotated or re-mapped API key takes effect on the next re-read;
+- if HANA can't be reached on a re-read, the current servers and keys stay in use.
+
+`server_name` is the tool prefix: `server_1` gives `server_1__add`.
+
+| variable | fallback | meaning |
 |---|---|---|
-| `SERVER_<ID>_URL` | `http://127.0.0.1:9001/mcp` | The server's live MCP URL |
-| `SERVER_<ID>_TRANSPORT` | `streamable_http` | `streamable_http` or `sse` (older servers) |
-| `SERVER_<ID>_TIMEOUT` | `60` | Seconds to wait for each reply |
-| `SERVER_<ID>_ENABLED` | `true` | `false` turns the server off without deleting it |
-| `SERVER_<ID>_INCLUDE_TOOLS` | `*` | Full tool names to expose, comma-separated; `*` = all tools |
-| `SERVER_<ID>_EXCLUDE_TOOLS` | `delete_everything` | Full tool names to remove from the included ones; may be empty |
+| `HANA_HOST`, `HANA_USER`, `HANA_PASSWORD`, `HANA_SCHEMA` | none: required | the HANA database |
+| `HANA_PORT` | `443` | HANA Cloud's SQL port |
+| `HANA_CONNECT_TIMEOUT`, `HANA_QUERY_TIMEOUT` | `10`, `30` | seconds before a HANA call gives up; the next re-read retries |
+| `MCP_SERVER_TABLE` | `mcp_app_mgs` | the server table |
+| `MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE` | `client_to_gateway_mcp_api_key_mgs` | the key table |
+| `MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE` | `client_to_gateway_mcp_api_key_mapping_mgs` | key-to-server mapping |
+| `USER_TABLE` | `user_mgs` | the users, so a deleted user's keys stop working |
+| `MCP_TOOL_TABLE` | `tools_mgs` | every server's tools (the gateway writes it) |
+| `MCP_TOOL_CHANGE_TABLE` | `tool_changes_mgs` | each tool's history (the gateway writes it) |
+| `MCP_TOOL_CALL_TABLE` | `tool_calls_mgs` | every tool call (the gateway writes it) |
+
+## Tool usage
+
+The gateway only reads the server, key and user tables. It writes three tables of its own:
+
+| table | one row per | filled when |
+|---|---|---|
+| `tools_mgs` | tool of a server (`mcp_id` = the server's id), ever listed | a re-list (connect, every 30s, a change the server announces) finds a new tool. A tool that disappears gets `removed_at`; one that comes back gets it cleared. Rows are never deleted. Hidden tools (`exclude_tools`) are recorded too |
+| `tool_changes_mgs` | change: `added`, `removed`, `changed` | the same re-list; `changed` means a new description or input schema, and `old_value` / `new_value` hold both as JSON |
+| `tool_calls_mgs` | `tools/call` | every call made with an API key: tool, key, user, `called_at` (UTC), `duration_ms`, `status` (`ok` / `error` / `timeout`), `error_message`. Arguments and results are not stored |
+
+Nothing waits for HANA: the gateway collects usage in memory and writes it every
+`GATEWAY_USAGE_FLUSH_INTERVAL` seconds. If HANA can't be reached, it keeps everything for the next round (up to
+`GATEWAY_USAGE_BUFFER_MAX` calls) and calls keep working. With several gateway instances each change is
+recorded once. Calls without an API key (`GATEWAY_AUTH_ENABLED=false`, stdio) are not recorded.
+
+Call count per tool, per server:
+
+```sql
+SELECT s."server_name", t."tool_name", COUNT(c."id") AS "calls"
+FROM "tools_mgs" t
+JOIN "mcp_app_mgs" s ON s."id" = t."mcp_id"
+LEFT JOIN "tool_calls_mgs" c ON c."tool_id" = t."id"
+GROUP BY s."server_name", t."tool_name";
+```
 
 ## Connecting AI clients
 
@@ -191,7 +249,7 @@ claude mcp add --transport http gateway https://gateway.example.com/mcp \
 
 **Local stdio** (no network auth; the client launches the gateway itself)
 ```json
-{ "command": "python", "args": ["/path/to/mcp-gateway-server/main.py", "--transport", "stdio"] }
+{ "command": "python", "args": ["/path/to/mcp-gateway-server/mcp_gateway/main.py", "--transport", "stdio"] }
 ```
 
 **Python**
@@ -201,7 +259,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client
 
 http = create_mcp_http_client(headers={"Authorization": "Bearer <key>"})
-async with Client(streamable_http_client("http://localhost:8080/mcp", http_client=http)) as c:
+async with Client(streamable_http_client("http://localhost:8080/mcp/gateway", http_client=http)) as c:
     print(await c.call_tool("math__add", {"a": 1, "b": 2}))
 ```
 
@@ -211,21 +269,23 @@ async with Client(streamable_http_client("http://localhost:8080/mcp", http_clien
 - Set `GATEWAY_ALLOWED_HOSTS` to the public hostname(s) to turn on DNS-rebinding protection.
 - MCP sessions are held in memory. If you run several replicas, use sticky sessions
   (keyed on the `Mcp-Session-Id` header).
-- Generate keys with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 
 ## Layout
 
 ```
-main.py         starts the gateway (http | stdio)
-gateway/
-  config.py     reads settings from environment variables, validation
-  upstream.py   upstream connections: supervisor, reconnect, catalog cache
-  server.py     MCP handlers: aggregate lists, route calls/reads/prompts
-  auth.py       API-key ASGI middleware + per-key upstream scoping
-  app.py        Starlette app: /mcp + /health
+mcp_gateway/     the gateway (deployable on its own; settings in mcp_gateway/.env)
+  main.py               starts the gateway (http | stdio)
+  config/settings.py    reads settings from environment variables, validation
+  db/                   loads the live servers and API keys from HANA; db/usage.py writes tool usage
+  usage/recorder.py     collects tool lists and calls in memory, writes them to HANA in the background
+  upstream/pool.py      upstream connections: supervisor, reconnect, catalog cache
+  server/gateway.py     MCP handlers: aggregate lists, route calls/reads/prompts
+  auth/api_keys.py      API-key ASGI middleware + per-key upstream scoping
+  web/app.py            Starlette app: MCP endpoint + /health
 servers/
   server_1/ server_2/ server_3/   sample MCP servers (ports 9001-9003)
 clients/
   client_1/                 plain MCP client using the admin key
   client_2/ client_3/       GPT-4.1 agents (SAP Gen AI Hub) using server / group keys
+backend/        FastAPI admin/user API on SAP HANA (settings in backend/.env)
 ```

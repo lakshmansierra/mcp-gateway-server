@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+hdbcli
+bcrypt
+PyJWT
+python-dotenv

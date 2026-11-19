@@ -1,7 +1,7 @@
 """An MCP client that talks only to the gateway, never to the upstream servers directly.
 
     python clients/client_1/client_1.py
-    python clients/client_1/client_1.py --url http://127.0.0.1:8080/mcp --key <api key>
+    python clients/client_1/client_1.py --url http://127.0.0.1:8080/mcp/gateway --key <api key>
 
 The key defaults to GATEWAY_API_KEY, falling back to API_KEY_ADMIN from the project's .env.
 """
@@ -66,7 +66,7 @@ async def run(url: str, key: str) -> None:
 def main() -> None:
     load_dotenv(_find_env_file())
     parser = argparse.ArgumentParser(description="Call MCP tools through the gateway")
-    parser.add_argument("--url", default=os.environ.get("GATEWAY_URL", "http://127.0.0.1:8080/mcp"))
+    parser.add_argument("--url", default=os.environ.get("GATEWAY_URL", "http://127.0.0.1:8080/mcp/gateway"))
     parser.add_argument("--key", default=os.environ.get("GATEWAY_API_KEY") or os.environ.get("API_KEY_ADMIN"))
     args = parser.parse_args()
     if not args.key:

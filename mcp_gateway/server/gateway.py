@@ -7,14 +7,24 @@ unchanged and routed back to the upstream that listed them.
 Change notifications: clients can open a `subscriptions/listen` stream. When a server's
 tools, resources or prompts change, the gateway tells each listening client, but only
 if its API key may use that server, so no client learns about servers it can't reach.
+
+Servers and API keys: both are the live rows of the backend's tables in HANA, re-read every
+GATEWAY_DB_SYNC_INTERVAL seconds, so servers and keys created, edited or deleted in the backend
+take effect without a restart.
+
+Tool usage: every server's tools (and how they change) and every tools/call are recorded in HANA by
+UsageRecorder (mcp_gateway/usage/), in the background.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+import time
+from dataclasses import dataclass, field
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any, TypeVar
 
 import anyio
@@ -25,9 +35,13 @@ from mcp.server.subscriptions import ListenHandler
 from mcp.shared.exceptions import MCPError
 from mcp.shared.subscriptions import ServerEvent
 
-from gateway.auth import api_key_from_request
-from gateway.config import NAME_SEPARATOR, ApiKeyConfig, GatewayConfig
-from gateway.upstream import Upstream, UpstreamPool, UpstreamUnavailableError
+from mcp_gateway.auth.api_keys import KeyStore, api_key_from_request
+from mcp_gateway.config.settings import NAME_SEPARATOR, ApiKeyConfig, GatewayConfig
+from mcp_gateway.db import load_registry
+from mcp_gateway.db.usage import ToolCall
+from mcp_gateway.upstream.pool import Upstream, UpstreamPool, UpstreamUnavailableError
+from mcp_gateway.usage import UsageRecorder
+from mcp_gateway.usage.recorder import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -69,39 +83,99 @@ class ChangeBus:
 
 
 class _ChangesVisibleTo:
-    """The bus one client's listen stream reads: only changes from servers its key may use."""
+    """The bus one client's listen stream reads: only changes from servers its key may use.
 
-    def __init__(self, bus: ChangeBus, key: ApiKeyConfig | None) -> None:
+    The key is looked up again for every event, so a stream opened before the key was deleted, or before its
+    servers changed, follows the key's current state instead of the one it had when the stream opened.
+    """
+
+    def __init__(self, bus: ChangeBus, key: ApiKeyConfig | None, keys: KeyStore, pool: UpstreamPool) -> None:
         self._bus = bus
         self._key = key
+        self._keys = keys
+        self._pool = pool
 
     async def publish(self, event: ServerEvent) -> None:  # part of SubscriptionBus; the gateway publishes via ChangeBus
         raise NotImplementedError
 
     def subscribe(self, listener: Callable[[ServerEvent], None]) -> Callable[[], None]:
         def deliver(upstream: str, event: ServerEvent) -> None:
-            if self._key is None or self._key.can_access(upstream):
+            if self._key is None:  # auth off: sees everything
+                listener(event)
+                return
+            current = self._keys.get(self._key.id)  # None once the key is deleted
+            if current is None:
+                return
+            server = self._pool.get(upstream)
+            # A server that was just removed is no longer in the pool: judge it by name.
+            if current.can_access(server.config) if server else current.can_access_name(upstream):
                 listener(event)
 
         return self._bus.subscribe(deliver)
+
+
+@dataclass
+class ReloadRound:
+    """One re-read of HANA, which reload requests can wait for."""
+
+    done: anyio.Event = field(default_factory=anyio.Event)
+    ok: bool = False
 
 
 class Gateway:
     def __init__(self, config: GatewayConfig) -> None:
         self.config = config
         self.changes = ChangeBus()
-        self.pool = UpstreamPool(config.enabled_upstreams, config.gateway, on_change=self.changes.publish)
+        self.usage = UsageRecorder(config.database, config.gateway)
+        # Disabled servers are connected too: their owning admin may still use them (ApiKeyConfig.can_access).
+        self.pool = UpstreamPool(
+            config.upstreams, config.gateway, on_change=self.changes.publish, on_tools=self.usage.tools_listed
+        )
+        self.keys = KeyStore(config.api_keys)
+        self._reload_requested = anyio.Event()
+        self._next_round = ReloadRound()
+
+    async def sync_from_db(self) -> None:
+        """Re-read the server and key tables and apply what changed: every GATEWAY_DB_SYNC_INTERVAL seconds, and
+        at once when the backend asks (request_reload). If HANA can't be reached, the current servers and keys
+        stay in use and the next round tries again."""
+        while True:
+            with anyio.move_on_after(self.config.gateway.db_sync_interval):
+                await self._reload_requested.wait()
+            # Reset before reading: a request that arrives while this round reads gets a round of its own, so a
+            # change committed after this read began is never missed.
+            self._reload_requested = anyio.Event()
+            this_round, self._next_round = self._next_round, ReloadRound()
+            try:
+                registry = await anyio.to_thread.run_sync(load_registry, self.config.database, abandon_on_cancel=True)
+                # Keys first: if applying the servers failed, a deleted key would otherwise keep working.
+                self.keys.replace(registry.api_keys)
+                self.pool.apply(registry.servers)
+                this_round.ok = True
+            except Exception as exc:  # noqa: BLE001 - nothing may stop this loop (or take the gateway down)
+                logger.warning("Could not re-read HANA (keeping the current servers and keys): %s", exc)
+            finally:
+                this_round.done.set()
+
+    async def request_reload(self, wait: float) -> ReloadRound | None:
+        """Ask for a re-read now and wait up to `wait` seconds for it. None if it didn't finish in time (it still
+        runs and applies on its own)."""
+        this_round = self._next_round
+        self._reload_requested.set()
+        with anyio.move_on_after(wait):
+            await this_round.done.wait()
+        return this_round if this_round.done.is_set() else None
 
     # ---- access control ---------------------------------------------------
 
     def _visible(self, ctx: ServerRequestContext[Any, Any]) -> list[Upstream]:
         key = api_key_from_request(ctx.request)
-        return [u for u in self.pool.upstreams.values() if u.connected and (key is None or key.can_access(u.name))]
+        return [u for u in self.pool.upstreams.values() if u.connected and (key is None or key.can_access(u.config))]
 
     def _resolve(self, ctx: ServerRequestContext[Any, Any], upstream_name: str) -> Upstream:
         upstream = self.pool.get(upstream_name)
         key = api_key_from_request(ctx.request)
-        if upstream is None or (key is not None and not key.can_access(upstream_name)):
+        if upstream is None or (key is not None and not key.can_access(upstream.config)):
             raise MCPError(types.INVALID_PARAMS, f"Unknown MCP server '{upstream_name}'")
         return upstream
 
@@ -164,20 +238,58 @@ class Gateway:
         if not upstream.config.tool_allowed(tool):
             raise MCPError(types.INVALID_PARAMS, f"Tool '{params.name}' is not exposed by this gateway")
         logger.info("tools/call %s -> %s.%s", _caller(ctx), upstream_name, tool)
+        called_at, started = utc_now(), time.monotonic()
+        status, error = "error", "cancelled before the server answered"  # unless set below
         # Down or slow servers come back as tool errors, not protocol errors, so an AI agent
         # sees the reason and can retry or pick another tool instead of its whole run failing.
         try:
-            return await self._forward(ctx, upstream, lambda c: c.call_tool(tool, params.arguments))
+            result = await self._forward(ctx, upstream, lambda c: c.call_tool(tool, params.arguments))
+            status, error = ("error", _text_of(result)) if result.is_error else ("ok", None)
+            return result
         except UpstreamUnavailableError as exc:
+            status, error = "error", str(exc)
             return _tool_error(str(exc))
         except MCPError as exc:
             if exc.error.code != types.REQUEST_TIMEOUT:
+                status, error = "error", exc.error.message
                 raise
             logger.warning("tools/call %s -> %s.%s timed out", _caller(ctx), upstream_name, tool)
-            return _tool_error(
+            message = (
                 f"'{params.name}' timed out: server '{upstream_name}' did not answer within "
                 f"{upstream.config.timeout_seconds:g}s"
             )
+            status, error = "timeout", message
+            return _tool_error(message)
+        finally:
+            self._record_call(ctx, upstream, tool, called_at, started, status, error)
+
+    def _record_call(
+        self,
+        ctx: ServerRequestContext[Any, Any],
+        upstream: Upstream,
+        tool: str,
+        called_at: datetime,
+        started: float,
+        status: str,
+        error: str | None,
+    ) -> None:
+        """Queue the call for tool_calls_mgs. Calls without an API key (auth off, stdio) have no key or user
+        to record them against, so they aren't recorded."""
+        key = api_key_from_request(ctx.request)
+        if key is None or upstream.config.id is None:
+            return
+        self.usage.call_made(
+            ToolCall(
+                mcp_id=upstream.config.id,
+                tool_name=tool,
+                key_id=key.id,
+                user_id=key.user_id,
+                called_at=called_at,
+                duration_ms=round((time.monotonic() - started) * 1000),
+                status=status,
+                error_message=error,
+            )
+        )
 
     # ---- resources --------------------------------------------------------
 
@@ -253,7 +365,9 @@ class Gateway:
     ) -> types.SubscriptionsListenResult:
         """Serve one client's change stream, limited to the servers its key may use."""
         logger.info("subscriptions/listen opened by %s", _caller(ctx))
-        handler = ListenHandler(_ChangesVisibleTo(self.changes, api_key_from_request(ctx.request)))
+        handler = ListenHandler(
+            _ChangesVisibleTo(self.changes, api_key_from_request(ctx.request), self.keys, self.pool)
+        )
         return await handler(ctx, params)
 
     async def _forward_or_error(
@@ -267,6 +381,12 @@ class Gateway:
 
 def _tool_error(message: str) -> types.CallToolResult:
     return types.CallToolResult(content=[types.TextContent(text=message)], is_error=True)
+
+
+def _text_of(result: types.CallToolResult) -> str | None:
+    """The text parts of a tool's error result: what the server said went wrong."""
+    text = "\n".join(c.text for c in result.content if isinstance(c, types.TextContent))
+    return text or None
 
 
 def _client_id(ctx: ServerRequestContext[Any, Any]) -> str | None:
@@ -284,19 +404,20 @@ def build_server(gateway: Gateway) -> Server[Any]:
     async def lifespan(_: Server[Any]) -> AsyncIterator[dict[str, Any]]:
         async with anyio.create_task_group() as tg:
             tg.start_soon(gateway.pool.run)
+            tg.start_soon(gateway.sync_from_db)
+            tg.start_soon(gateway.usage.run)
             await gateway.pool.wait_until_ready(gateway.config.gateway.startup_connect_timeout)
             try:
                 yield {"gateway": gateway}
             finally:
                 tg.cancel_scope.cancel()
 
-    upstream_names = ", ".join(gateway.pool.upstreams) or "none"
     return Server(
         gateway.config.gateway.name,
         version=gateway.config.gateway.version,
         instructions=(
             "This gateway aggregates several MCP servers. Tool and prompt names are "
-            f"prefixed with their server name and '{NAME_SEPARATOR}'. Connected servers: {upstream_names}."
+            f"prefixed with their server name and '{NAME_SEPARATOR}', e.g. '<server>{NAME_SEPARATOR}<tool>'."
         ),
         lifespan=lifespan,
         on_list_tools=gateway.list_tools,

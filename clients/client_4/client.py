@@ -10,7 +10,7 @@ This client itself always talks to the gateway over streamable_http.
 
     python servers/server_3/server_3.py     # port 9003
     python servers/server_5/server_5.py     # port 9004: /mcp and /sse
-    python main.py                          # gateway
+    python mcp_gateway/main.py              # gateway
     python clients/client_4/client.py
 """
 
@@ -37,7 +37,7 @@ from clients.client_4._util.file_ops import write_json
 from clients.client_4._llm.models_llm import agentic_transformer_func_llm
 
 load_dotenv()
-GATEWAY_URL = os.getenv("GATEWAY_URL", "http://127.0.0.1:8080/mcp")
+GATEWAY_URL = os.getenv("GATEWAY_URL", "http://127.0.0.1:8080/mcp/gateway")
 GATEWAY_API_KEY = os.getenv("API_KEY_GROUP_14")
 
 

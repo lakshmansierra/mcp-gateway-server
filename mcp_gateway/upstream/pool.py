@@ -5,15 +5,22 @@ alive with periodic catalog refreshes, and reconnects with exponential backoff w
 the upstream goes away. That shared session is the gateway's own: it lists the catalog.
 
 Client requests (tools/call, resources/read, ...) use a separate session per client key,
-opened on first use and sent with `X-MCP-Client: <key name>`, so the server sees which
+opened on first use and sent with `<GATEWAY_CLIENT_ID_HEADER>: <key name>` (X-MCP-Client by default), so the server sees which
 client is calling and no state is shared between clients. Idle client sessions close
-after GATEWAY_CLIENT_SESSION_IDLE seconds; all of them close when the shared session drops.
+after client_session_idle seconds; all of them close when the shared session drops.
 
 Catalog freshness: the shared session also opens a `subscriptions/listen` stream, so a
-server that announces a change gets re-listed within GATEWAY_CHANGE_DEBOUNCE seconds. Servers
-that can't stream changes are still re-listed every GATEWAY_HEALTH_CHECK_INTERVAL seconds. Every
+server that announces a change gets re-listed within change_debounce seconds. Servers
+that can't stream changes are still re-listed every health_check_interval seconds. Every
 refresh compares the new catalog with the old one and reports what changed to `on_change`,
-which the gateway passes on to its own clients.
+which the gateway passes on to its own clients. Each successful re-list also reports the server's full tool
+list (before include/exclude filtering) to `on_tools`, for the tool usage tables, when it differs from the
+last one reported.
+
+The set of servers can change while the gateway runs: `UpstreamPool.apply` starts new servers, stops removed
+ones, reconnects servers whose URL, transport or timeout changed, and re-filters the catalog of servers whose
+tool filters changed (no reconnect needed). Disabled servers stay connected (their owning admin may still use
+them); enabling or disabling one only changes who may see it, and tells listening clients to re-list.
 """
 
 from __future__ import annotations
@@ -35,14 +42,14 @@ from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp.shared.exceptions import MCPError
 from mcp.shared.subscriptions import PromptsListChanged, ResourcesListChanged, ServerEvent, ToolsListChanged
 
-from gateway.config import GatewaySettings, UpstreamConfig
+from mcp_gateway.config.settings import GatewaySettings, UpstreamConfig
 
 logger = logging.getLogger(__name__)
 
-CLIENT_ID_HEADER = "X-MCP-Client"
-
 # Called with (server name, what changed) whenever a server's catalog changes.
 OnChange = Callable[[str, list[ServerEvent]], None]
+# Called with (server row id, server name, its full tool list) after a re-list that found a different list.
+OnTools = Callable[[int, str, list[types.Tool]], None]
 
 
 class UpstreamUnavailableError(RuntimeError):
@@ -95,13 +102,21 @@ async def _collect(fetch: Any, attr: str) -> list[Any]:
 
 
 class Upstream:
-    def __init__(self, config: UpstreamConfig, settings: GatewaySettings, on_change: OnChange | None = None) -> None:
+    def __init__(
+        self,
+        config: UpstreamConfig,
+        settings: GatewaySettings,
+        on_change: OnChange | None = None,
+        on_tools: OnTools | None = None,
+    ) -> None:
         self.config = config
         self.settings = settings
         self.client: Client | None = None
         self.catalog = Catalog()
         self.last_error: str | None = None
         self._on_change = on_change
+        self._on_tools = on_tools
+        self._reported_tools: tuple[int, list[types.Tool]] | None = None  # last (row id, list) sent to on_tools
         self._broken = anyio.Event()
         self._changed = anyio.Event()
         self._refresh_lock = anyio.Lock()
@@ -118,7 +133,7 @@ class Upstream:
 
     def _transport(self, stack: AsyncExitStack, caller: str | None = None) -> Any:
         cfg = self.config
-        headers = {CLIENT_ID_HEADER: caller} if caller else None  # names the client this session calls for
+        headers = {self.settings.client_id_header: caller} if caller else None  # names the client this session calls for
         if cfg.transport == "sse":
             return sse_client(cfg.url, headers=headers, timeout=cfg.timeout_seconds)
         http_client = create_mcp_http_client(headers=headers)
@@ -217,6 +232,13 @@ class Upstream:
     def mark_broken(self) -> None:
         self._broken.set()
 
+    def update_filters(self, config: UpstreamConfig) -> None:
+        """Take new include/exclude tool lists. The connection is kept; the catalog is re-listed so clients
+        see the change at once (when not connected, the next connect uses the new filters anyway)."""
+        self.config = config
+        if self.client is not None:
+            self._changed.set()
+
     async def client_for(self, caller: str | None) -> Client:
         """The session to use for `caller` (a client key name); None means the gateway's shared session."""
         shared = self.require_client()
@@ -281,15 +303,26 @@ class Upstream:
             client = self.require_client()
             caps = client.server_capabilities
             catalog = Catalog(fetched_at=time.monotonic())
+            all_tools: list[types.Tool] = []
             if caps.tools is not None:
-                tools = await _collect(client.list_tools, "tools")
-                catalog.tools = [t for t in tools if self.config.tool_allowed(t.name)]
+                all_tools = await _collect(client.list_tools, "tools")
+                catalog.tools = [t for t in all_tools if self.config.tool_allowed(t.name)]
             if caps.resources is not None:
                 catalog.resources = await _collect(client.list_resources, "resources")
                 catalog.resource_templates = await _collect(client.list_resource_templates, "resource_templates")
             if caps.prompts is not None:
                 catalog.prompts = await _collect(client.list_prompts, "prompts")
             self._set_catalog(catalog)
+            self._report_tools(all_tools)
+
+    def _report_tools(self, tools: list[types.Tool]) -> None:
+        """Only after a successful list: a server that is down reports nothing, so its tools aren't marked
+        removed."""
+        mcp_id = self.config.id
+        if self._on_tools is None or mcp_id is None or self._reported_tools == (mcp_id, tools):
+            return
+        self._reported_tools = (mcp_id, tools)
+        self._on_tools(mcp_id, self.name, tools)
 
     def _set_catalog(self, catalog: Catalog) -> None:
         changes = catalog.changes_from(self.catalog)
@@ -301,6 +334,7 @@ class Upstream:
     def status(self) -> dict[str, Any]:
         return {
             "name": self.name,
+            "enabled": self.config.enabled,
             "url": self.config.url,
             "transport": self.config.transport,
             "connected": self.connected,
@@ -319,16 +353,102 @@ def _describe(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
 
 
+# Changing any of these means a new connection; the others (tool filters) apply to the open one.
+_CONNECTION_FIELDS = ("url", "transport", "timeout_seconds")
+
+
 class UpstreamPool:
     def __init__(
-        self, configs: list[UpstreamConfig], settings: GatewaySettings, on_change: OnChange | None = None
+        self,
+        configs: list[UpstreamConfig],
+        settings: GatewaySettings,
+        on_change: OnChange | None = None,
+        on_tools: OnTools | None = None,
     ) -> None:
-        self.upstreams: dict[str, Upstream] = {c.name: Upstream(c, settings, on_change) for c in configs}
+        self.settings = settings
+        self._on_change = on_change
+        self._on_tools = on_tools
+        self.upstreams: dict[str, Upstream] = {c.name: self._new(c) for c in configs}
+        self._scopes: dict[str, anyio.CancelScope] = {}
+        self._tg: anyio.abc.TaskGroup | None = None
+
+    def _new(self, config: UpstreamConfig) -> Upstream:
+        return Upstream(config, self.settings, self._on_change, self._on_tools)
 
     async def run(self) -> None:
         async with anyio.create_task_group() as tg:
+            self._tg = tg
             for upstream in self.upstreams.values():
-                tg.start_soon(upstream.run, name=f"upstream:{upstream.name}")
+                self._start(upstream)
+            try:
+                await anyio.sleep_forever()
+            finally:
+                self._tg = None
+
+    def _start(self, upstream: Upstream) -> None:
+        assert self._tg is not None
+        scope = self._scopes[upstream.name] = anyio.CancelScope()
+
+        async def supervise() -> None:
+            with scope:
+                await upstream.run()
+
+        self._tg.start_soon(supervise, name=f"upstream:{upstream.name}")
+
+    def _stop(self, name: str) -> None:
+        """Remove a server: it leaves every list at once, and its connection is closed."""
+        self.upstreams.pop(name, None)
+        scope = self._scopes.pop(name, None)
+        if scope is not None:
+            scope.cancel()  # its supervisor empties its catalog on the way out, which tells listening clients
+
+    def apply(self, configs: list[UpstreamConfig]) -> None:
+        """Make the running servers match `configs` (the live rows of the server table)."""
+        if self._tg is None:  # not running yet: just replace the list
+            self.upstreams = {c.name: self._new(c) for c in configs}
+            return
+        wanted = {c.name: c for c in configs}
+        for name in [n for n in self.upstreams if n not in wanted]:
+            logger.info("Server '%s' was deleted or renamed: disconnecting", name)
+            self._stop(name)
+        for name, config in wanted.items():
+            current = self.upstreams.get(name)
+            if current is None:
+                logger.info("Server '%s' was added: connecting to %s", name, config.url)
+            elif any(getattr(current.config, f) != getattr(config, f) for f in _CONNECTION_FIELDS):
+                logger.info("Server '%s' changed its URL, transport or timeout: reconnecting", name)
+                self._stop(name)
+            else:
+                if current.config != config:
+                    old = current.config
+                    if (old.include_tools, old.exclude_tools) != (config.include_tools, config.exclude_tools):
+                        logger.info(
+                            "Server '%s' tool filters changed: include=%s exclude=%s",
+                            name,
+                            config.include_tools,
+                            config.exclude_tools,
+                        )
+                    if old.enabled != config.enabled:
+                        logger.info(
+                            "Server '%s' was %s",
+                            name,
+                            "enabled: open to every key allowed to use it"
+                            if config.enabled
+                            else "disabled: only the admin who registered it can use it now",
+                        )
+                        if not config.enabled:
+                            self._announce(name)  # before the switch, so the clients losing it hear about it
+                    current.update_filters(config)
+                    if config.enabled and not old.enabled:
+                        self._announce(name)  # after the switch, so the clients gaining it hear about it
+                continue
+            upstream = self.upstreams[name] = self._new(config)
+            self._start(upstream)
+
+    def _announce(self, name: str) -> None:
+        """Tell listening clients that a server's lists changed, so they re-list (who may see it changed)."""
+        if self._on_change is not None:
+            self._on_change(name, [ToolsListChanged(), ResourcesListChanged(), PromptsListChanged()])
 
     async def wait_until_ready(self, timeout: float) -> None:
         """Give upstreams a moment to connect at startup so the first tools/list is complete."""
