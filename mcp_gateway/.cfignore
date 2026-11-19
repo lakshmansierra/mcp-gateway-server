@@ -1,0 +1,6 @@
+# Settings come from manifest.yml env, never from a pushed .env.
+.env*
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
