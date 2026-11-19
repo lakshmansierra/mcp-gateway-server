@@ -39,6 +39,9 @@ through one authenticated URL. Clients don't connect to upstream servers directl
 - **Resilience.** Each upstream has its own supervisor that health-checks the connection
   every 30s and reconnects with exponential backoff. If one upstream is down, the
   others keep working, and calls to the down server get a clear error.
+- **Tool usage in HANA.** Every server's tools and how they change over time, and every tool call
+  (who, when, how long, ok / error / timeout), are written to three HANA tables in the background.
+  See [Tool usage](#tool-usage).
 - **Configured by environment variables.** Settings come from a `.env` file or the real environment.
 - **Transports.** HTTP for remote clients; stdio for local clients that launch the gateway as a subprocess.
 
@@ -156,6 +159,8 @@ variables already set in the real environment take precedence. See
 | `GATEWAY_CLIENT_ID_HEADER` | `X-MCP-Client` | header naming the client (`<user>/<key>`) on its sessions to servers |
 | `GATEWAY_RELOAD_PATH` | `/internal/reload` | route the backend calls after a change, so it applies at once |
 | `GATEWAY_RELOAD_SECRET` | empty (off) | secret the backend must send to that route; same value in `backend/.env` |
+| `GATEWAY_USAGE_FLUSH_INTERVAL` | `5` | seconds between writes of tool usage to HANA |
+| `GATEWAY_USAGE_BUFFER_MAX` | `10000` | tool calls that may wait while HANA can't be reached; beyond that the oldest are dropped |
 
 **Client API keys** are not set in `.env` either: they are rows of the key table in HANA, created through
 the backend (`POST /api/keys`, shown once). The table stores only each key's SHA-256 hash; the gateway hashes
@@ -185,13 +190,41 @@ gateway's reload route right after each change (`GATEWAY_RELOAD_URL` + `GATEWAY_
 
 | variable | fallback | meaning |
 |---|---|---|
-| `HANA_HOST`, `HANA_USER`, `HANA_PASSWORD`, `HANA_SCHEMA` | none: required | the HANA database (read-only use) |
+| `HANA_HOST`, `HANA_USER`, `HANA_PASSWORD`, `HANA_SCHEMA` | none: required | the HANA database |
 | `HANA_PORT` | `443` | HANA Cloud's SQL port |
 | `HANA_CONNECT_TIMEOUT`, `HANA_QUERY_TIMEOUT` | `10`, `30` | seconds before a HANA call gives up; the next re-read retries |
 | `MCP_SERVER_TABLE` | `mcp_app_mgs` | the server table |
 | `MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE` | `client_to_gateway_mcp_api_key_mgs` | the key table |
 | `MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE` | `client_to_gateway_mcp_api_key_mapping_mgs` | key-to-server mapping |
 | `USER_TABLE` | `user_mgs` | the users, so a deleted user's keys stop working |
+| `MCP_TOOL_TABLE` | `tools_mgs` | every server's tools (the gateway writes it) |
+| `MCP_TOOL_CHANGE_TABLE` | `tool_changes_mgs` | each tool's history (the gateway writes it) |
+| `MCP_TOOL_CALL_TABLE` | `tool_calls_mgs` | every tool call (the gateway writes it) |
+
+## Tool usage
+
+The gateway only reads the server, key and user tables. It writes three tables of its own:
+
+| table | one row per | filled when |
+|---|---|---|
+| `tools_mgs` | tool of a server (`mcp_id` = the server's id), ever listed | a re-list (connect, every 30s, a change the server announces) finds a new tool. A tool that disappears gets `removed_at`; one that comes back gets it cleared. Rows are never deleted. Hidden tools (`exclude_tools`) are recorded too |
+| `tool_changes_mgs` | change: `added`, `removed`, `changed` | the same re-list; `changed` means a new description or input schema, and `old_value` / `new_value` hold both as JSON |
+| `tool_calls_mgs` | `tools/call` | every call made with an API key: tool, key, user, `called_at` (UTC), `duration_ms`, `status` (`ok` / `error` / `timeout`), `error_message`. Arguments and results are not stored |
+
+Nothing waits for HANA: the gateway collects usage in memory and writes it every
+`GATEWAY_USAGE_FLUSH_INTERVAL` seconds. If HANA can't be reached, it keeps everything for the next round (up to
+`GATEWAY_USAGE_BUFFER_MAX` calls) and calls keep working. With several gateway instances each change is
+recorded once. Calls without an API key (`GATEWAY_AUTH_ENABLED=false`, stdio) are not recorded.
+
+Call count per tool, per server:
+
+```sql
+SELECT s."server_name", t."tool_name", COUNT(c."id") AS "calls"
+FROM "tools_mgs" t
+JOIN "mcp_app_mgs" s ON s."id" = t."mcp_id"
+LEFT JOIN "tool_calls_mgs" c ON c."tool_id" = t."id"
+GROUP BY s."server_name", t."tool_name";
+```
 
 ## Connecting AI clients
 
@@ -243,7 +276,8 @@ async with Client(streamable_http_client("http://localhost:8080/mcp/gateway", ht
 mcp_gateway/     the gateway (deployable on its own; settings in mcp_gateway/.env)
   main.py               starts the gateway (http | stdio)
   config/settings.py    reads settings from environment variables, validation
-  db/                   loads the live servers and API keys from HANA
+  db/                   loads the live servers and API keys from HANA; db/usage.py writes tool usage
+  usage/recorder.py     collects tool lists and calls in memory, writes them to HANA in the background
   upstream/pool.py      upstream connections: supervisor, reconnect, catalog cache
   server/gateway.py     MCP handlers: aggregate lists, route calls/reads/prompts
   auth/api_keys.py      API-key ASGI middleware + per-key upstream scoping

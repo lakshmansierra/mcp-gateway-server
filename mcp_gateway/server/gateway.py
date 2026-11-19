@@ -11,15 +11,20 @@ if its API key may use that server, so no client learns about servers it can't r
 Servers and API keys: both are the live rows of the backend's tables in HANA, re-read every
 GATEWAY_DB_SYNC_INTERVAL seconds, so servers and keys created, edited or deleted in the backend
 take effect without a restart.
+
+Tool usage: every server's tools (and how they change) and every tools/call are recorded in HANA by
+UsageRecorder (mcp_gateway/usage/), in the background.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any, TypeVar
 
 import anyio
@@ -33,7 +38,10 @@ from mcp.shared.subscriptions import ServerEvent
 from mcp_gateway.auth.api_keys import KeyStore, api_key_from_request
 from mcp_gateway.config.settings import NAME_SEPARATOR, ApiKeyConfig, GatewayConfig
 from mcp_gateway.db import load_registry
+from mcp_gateway.db.usage import ToolCall
 from mcp_gateway.upstream.pool import Upstream, UpstreamPool, UpstreamUnavailableError
+from mcp_gateway.usage import UsageRecorder
+from mcp_gateway.usage.recorder import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -118,8 +126,11 @@ class Gateway:
     def __init__(self, config: GatewayConfig) -> None:
         self.config = config
         self.changes = ChangeBus()
+        self.usage = UsageRecorder(config.database, config.gateway)
         # Disabled servers are connected too: their owning admin may still use them (ApiKeyConfig.can_access).
-        self.pool = UpstreamPool(config.upstreams, config.gateway, on_change=self.changes.publish)
+        self.pool = UpstreamPool(
+            config.upstreams, config.gateway, on_change=self.changes.publish, on_tools=self.usage.tools_listed
+        )
         self.keys = KeyStore(config.api_keys)
         self._reload_requested = anyio.Event()
         self._next_round = ReloadRound()
@@ -227,20 +238,58 @@ class Gateway:
         if not upstream.config.tool_allowed(tool):
             raise MCPError(types.INVALID_PARAMS, f"Tool '{params.name}' is not exposed by this gateway")
         logger.info("tools/call %s -> %s.%s", _caller(ctx), upstream_name, tool)
+        called_at, started = utc_now(), time.monotonic()
+        status, error = "error", "cancelled before the server answered"  # unless set below
         # Down or slow servers come back as tool errors, not protocol errors, so an AI agent
         # sees the reason and can retry or pick another tool instead of its whole run failing.
         try:
-            return await self._forward(ctx, upstream, lambda c: c.call_tool(tool, params.arguments))
+            result = await self._forward(ctx, upstream, lambda c: c.call_tool(tool, params.arguments))
+            status, error = ("error", _text_of(result)) if result.is_error else ("ok", None)
+            return result
         except UpstreamUnavailableError as exc:
+            status, error = "error", str(exc)
             return _tool_error(str(exc))
         except MCPError as exc:
             if exc.error.code != types.REQUEST_TIMEOUT:
+                status, error = "error", exc.error.message
                 raise
             logger.warning("tools/call %s -> %s.%s timed out", _caller(ctx), upstream_name, tool)
-            return _tool_error(
+            message = (
                 f"'{params.name}' timed out: server '{upstream_name}' did not answer within "
                 f"{upstream.config.timeout_seconds:g}s"
             )
+            status, error = "timeout", message
+            return _tool_error(message)
+        finally:
+            self._record_call(ctx, upstream, tool, called_at, started, status, error)
+
+    def _record_call(
+        self,
+        ctx: ServerRequestContext[Any, Any],
+        upstream: Upstream,
+        tool: str,
+        called_at: datetime,
+        started: float,
+        status: str,
+        error: str | None,
+    ) -> None:
+        """Queue the call for tool_calls_mgs. Calls without an API key (auth off, stdio) have no key or user
+        to record them against, so they aren't recorded."""
+        key = api_key_from_request(ctx.request)
+        if key is None or upstream.config.id is None:
+            return
+        self.usage.call_made(
+            ToolCall(
+                mcp_id=upstream.config.id,
+                tool_name=tool,
+                key_id=key.id,
+                user_id=key.user_id,
+                called_at=called_at,
+                duration_ms=round((time.monotonic() - started) * 1000),
+                status=status,
+                error_message=error,
+            )
+        )
 
     # ---- resources --------------------------------------------------------
 
@@ -334,6 +383,12 @@ def _tool_error(message: str) -> types.CallToolResult:
     return types.CallToolResult(content=[types.TextContent(text=message)], is_error=True)
 
 
+def _text_of(result: types.CallToolResult) -> str | None:
+    """The text parts of a tool's error result: what the server said went wrong."""
+    text = "\n".join(c.text for c in result.content if isinstance(c, types.TextContent))
+    return text or None
+
+
 def _client_id(ctx: ServerRequestContext[Any, Any]) -> str | None:
     """The calling client's identity (its API key name), or None when auth is off (stdio, GATEWAY_AUTH_ENABLED=false)."""
     key = api_key_from_request(ctx.request)
@@ -350,6 +405,7 @@ def build_server(gateway: Gateway) -> Server[Any]:
         async with anyio.create_task_group() as tg:
             tg.start_soon(gateway.pool.run)
             tg.start_soon(gateway.sync_from_db)
+            tg.start_soon(gateway.usage.run)
             await gateway.pool.wait_until_ready(gateway.config.gateway.startup_connect_timeout)
             try:
                 yield {"gateway": gateway}

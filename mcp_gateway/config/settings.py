@@ -10,14 +10,19 @@ environment); nothing else is:
     GATEWAY_DB_SYNC_INTERVAL                                            timers (seconds)
     GATEWAY_HEALTH_PATH, GATEWAY_CLIENT_ID_HEADER                       health route; header naming the client to servers
     GATEWAY_RELOAD_PATH, GATEWAY_RELOAD_SECRET                          route the backend calls after a change
+    GATEWAY_USAGE_FLUSH_INTERVAL, GATEWAY_USAGE_BUFFER_MAX              tool usage: how often it is written to HANA,
+                                                                        how many unwritten rows may wait
     HANA_HOST, HANA_PORT, HANA_USER, HANA_PASSWORD, HANA_SCHEMA         the database
     HANA_CONNECT_TIMEOUT, HANA_QUERY_TIMEOUT                            seconds before a HANA call gives up
     USER_TABLE, MCP_SERVER_TABLE,
     MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE,
     MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE                         the backend's tables
+    MCP_TOOL_TABLE, MCP_TOOL_CHANGE_TABLE, MCP_TOOL_CALL_TABLE          tool usage tables (the gateway writes them)
 
 Everything else comes from HANA: the MCP servers and the client API keys are rows in those tables, managed
 through the backend, loaded at startup and re-read every GATEWAY_DB_SYNC_INTERVAL seconds (mcp_gateway/db/).
+The gateway writes only the tool usage tables: each server's tools and their history, and every tool call
+(mcp_gateway/usage/).
 """
 
 from __future__ import annotations
@@ -54,6 +59,8 @@ GATEWAY_FIELDS = {
     "GATEWAY_CLIENT_ID_HEADER": "client_id_header",
     "GATEWAY_RELOAD_PATH": "reload_path",
     "GATEWAY_RELOAD_SECRET": "reload_secret",
+    "GATEWAY_USAGE_FLUSH_INTERVAL": "usage_flush_interval",
+    "GATEWAY_USAGE_BUFFER_MAX": "usage_buffer_max",
 }
 DATABASE_FIELDS = {
     "HANA_HOST": "host",
@@ -67,6 +74,9 @@ DATABASE_FIELDS = {
     "MCP_SERVER_TABLE": "server_table",
     "MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE": "api_key_table",
     "MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE": "api_key_mapping_table",
+    "MCP_TOOL_TABLE": "tool_table",
+    "MCP_TOOL_CHANGE_TABLE": "tool_change_table",
+    "MCP_TOOL_CALL_TABLE": "tool_call_table",
 }
 # No default can be guessed for these: the gateway stops at startup if one is missing.
 REQUIRED_DATABASE_VARS = ("HANA_HOST", "HANA_USER", "HANA_PASSWORD", "HANA_SCHEMA")
@@ -92,6 +102,8 @@ class UpstreamConfig(BaseModel):
     # The admin who registered it (the row's user_id). While the server is disabled, only that admin's keys
     # reach it; everyone else's lists and calls skip it.
     owner_id: int | None = None
+    # The row's id: the tool usage tables refer to the server by it (tools_mgs.mcp_id). None = not recorded.
+    id: int | None = None
 
     @field_validator("name")
     @classmethod
@@ -183,6 +195,11 @@ class GatewaySettings(BaseModel):
     # No secret (the default) = the route is off and only the periodic re-read applies changes.
     reload_path: str = "/internal/reload"
     reload_secret: str | None = Field(None, repr=False)
+    # Tool usage (every server's tools and their history, every tool call) is kept in memory and written to
+    # HANA in the background every usage_flush_interval seconds, so calls never wait for the database. While
+    # HANA can't be reached, up to usage_buffer_max calls wait; beyond that the oldest are dropped (logged).
+    usage_flush_interval: float = Field(5.0, gt=0)
+    usage_buffer_max: int = Field(10000, gt=0)
 
     @field_validator("path", "health_path", "reload_path")
     @classmethod
@@ -216,8 +233,21 @@ class DatabaseSettings(BaseModel):
     server_table: str = "mcp_app_mgs"
     api_key_table: str = "client_to_gateway_mcp_api_key_mgs"
     api_key_mapping_table: str = "client_to_gateway_mcp_api_key_mapping_mgs"
+    # Written by the gateway: each server's tools, their history, and every tool call.
+    tool_table: str = "tools_mgs"
+    tool_change_table: str = "tool_changes_mgs"
+    tool_call_table: str = "tool_calls_mgs"
 
-    @field_validator("schema_name", "user_table", "server_table", "api_key_table", "api_key_mapping_table")
+    @field_validator(
+        "schema_name",
+        "user_table",
+        "server_table",
+        "api_key_table",
+        "api_key_mapping_table",
+        "tool_table",
+        "tool_change_table",
+        "tool_call_table",
+    )
     @classmethod
     def _plain_identifier(cls, v: str) -> str:
         # Put into SQL as quoted identifiers, so only plain names are allowed.

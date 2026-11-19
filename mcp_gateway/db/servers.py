@@ -27,10 +27,10 @@ def load_servers(cur: dbapi.Cursor, db: DatabaseSettings) -> list[UpstreamConfig
     server."""
     cur.execute(
         f'SELECT "server_name", "server_url", "transport", "timeout_seconds", "include_tools", "exclude_tools", '
-        f'"enabled", "user_id" FROM {db.table(db.server_table)} WHERE "is_deleted" = 0 ORDER BY "id"'
+        f'"enabled", "user_id", "id" FROM {db.table(db.server_table)} WHERE "is_deleted" = 0 ORDER BY "id"'
     )
     servers: dict[str, UpstreamConfig] = {}
-    for name, url, transport, timeout, include, exclude, enabled, owner_id in cur.fetchall():
+    for name, url, transport, timeout, include, exclude, enabled, owner_id, server_id in cur.fetchall():
         try:
             config = UpstreamConfig(
                 name=name,
@@ -41,6 +41,7 @@ def load_servers(cur: dbapi.Cursor, db: DatabaseSettings) -> list[UpstreamConfig
                 include_tools=_split_tools(include) or [ALL_TOOLS],  # the column's default is '*'
                 exclude_tools=_split_tools(exclude),
                 owner_id=owner_id,
+                id=server_id,
             )
         except ValidationError as exc:
             logger.warning("Skipping server '%s' from the server table: %s", name, exc.errors()[0]["msg"])

@@ -13,7 +13,9 @@ Catalog freshness: the shared session also opens a `subscriptions/listen` stream
 server that announces a change gets re-listed within change_debounce seconds. Servers
 that can't stream changes are still re-listed every health_check_interval seconds. Every
 refresh compares the new catalog with the old one and reports what changed to `on_change`,
-which the gateway passes on to its own clients.
+which the gateway passes on to its own clients. Each successful re-list also reports the server's full tool
+list (before include/exclude filtering) to `on_tools`, for the tool usage tables, when it differs from the
+last one reported.
 
 The set of servers can change while the gateway runs: `UpstreamPool.apply` starts new servers, stops removed
 ones, reconnects servers whose URL, transport or timeout changed, and re-filters the catalog of servers whose
@@ -46,6 +48,8 @@ logger = logging.getLogger(__name__)
 
 # Called with (server name, what changed) whenever a server's catalog changes.
 OnChange = Callable[[str, list[ServerEvent]], None]
+# Called with (server row id, server name, its full tool list) after a re-list that found a different list.
+OnTools = Callable[[int, str, list[types.Tool]], None]
 
 
 class UpstreamUnavailableError(RuntimeError):
@@ -98,13 +102,21 @@ async def _collect(fetch: Any, attr: str) -> list[Any]:
 
 
 class Upstream:
-    def __init__(self, config: UpstreamConfig, settings: GatewaySettings, on_change: OnChange | None = None) -> None:
+    def __init__(
+        self,
+        config: UpstreamConfig,
+        settings: GatewaySettings,
+        on_change: OnChange | None = None,
+        on_tools: OnTools | None = None,
+    ) -> None:
         self.config = config
         self.settings = settings
         self.client: Client | None = None
         self.catalog = Catalog()
         self.last_error: str | None = None
         self._on_change = on_change
+        self._on_tools = on_tools
+        self._reported_tools: tuple[int, list[types.Tool]] | None = None  # last (row id, list) sent to on_tools
         self._broken = anyio.Event()
         self._changed = anyio.Event()
         self._refresh_lock = anyio.Lock()
@@ -291,15 +303,26 @@ class Upstream:
             client = self.require_client()
             caps = client.server_capabilities
             catalog = Catalog(fetched_at=time.monotonic())
+            all_tools: list[types.Tool] = []
             if caps.tools is not None:
-                tools = await _collect(client.list_tools, "tools")
-                catalog.tools = [t for t in tools if self.config.tool_allowed(t.name)]
+                all_tools = await _collect(client.list_tools, "tools")
+                catalog.tools = [t for t in all_tools if self.config.tool_allowed(t.name)]
             if caps.resources is not None:
                 catalog.resources = await _collect(client.list_resources, "resources")
                 catalog.resource_templates = await _collect(client.list_resource_templates, "resource_templates")
             if caps.prompts is not None:
                 catalog.prompts = await _collect(client.list_prompts, "prompts")
             self._set_catalog(catalog)
+            self._report_tools(all_tools)
+
+    def _report_tools(self, tools: list[types.Tool]) -> None:
+        """Only after a successful list: a server that is down reports nothing, so its tools aren't marked
+        removed."""
+        mcp_id = self.config.id
+        if self._on_tools is None or mcp_id is None or self._reported_tools == (mcp_id, tools):
+            return
+        self._reported_tools = (mcp_id, tools)
+        self._on_tools(mcp_id, self.name, tools)
 
     def _set_catalog(self, catalog: Catalog) -> None:
         changes = catalog.changes_from(self.catalog)
@@ -336,13 +359,21 @@ _CONNECTION_FIELDS = ("url", "transport", "timeout_seconds")
 
 class UpstreamPool:
     def __init__(
-        self, configs: list[UpstreamConfig], settings: GatewaySettings, on_change: OnChange | None = None
+        self,
+        configs: list[UpstreamConfig],
+        settings: GatewaySettings,
+        on_change: OnChange | None = None,
+        on_tools: OnTools | None = None,
     ) -> None:
         self.settings = settings
         self._on_change = on_change
-        self.upstreams: dict[str, Upstream] = {c.name: Upstream(c, settings, on_change) for c in configs}
+        self._on_tools = on_tools
+        self.upstreams: dict[str, Upstream] = {c.name: self._new(c) for c in configs}
         self._scopes: dict[str, anyio.CancelScope] = {}
         self._tg: anyio.abc.TaskGroup | None = None
+
+    def _new(self, config: UpstreamConfig) -> Upstream:
+        return Upstream(config, self.settings, self._on_change, self._on_tools)
 
     async def run(self) -> None:
         async with anyio.create_task_group() as tg:
@@ -374,7 +405,7 @@ class UpstreamPool:
     def apply(self, configs: list[UpstreamConfig]) -> None:
         """Make the running servers match `configs` (the live rows of the server table)."""
         if self._tg is None:  # not running yet: just replace the list
-            self.upstreams = {c.name: Upstream(c, self.settings, self._on_change) for c in configs}
+            self.upstreams = {c.name: self._new(c) for c in configs}
             return
         wanted = {c.name: c for c in configs}
         for name in [n for n in self.upstreams if n not in wanted]:
@@ -411,7 +442,7 @@ class UpstreamPool:
                     if config.enabled and not old.enabled:
                         self._announce(name)  # after the switch, so the clients gaining it hear about it
                 continue
-            upstream = self.upstreams[name] = Upstream(config, self.settings, self._on_change)
+            upstream = self.upstreams[name] = self._new(config)
             self._start(upstream)
 
     def _announce(self, name: str) -> None:
