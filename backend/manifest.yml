@@ -1,0 +1,40 @@
+# Cloud Foundry manifest for the MCP Gateway backend (FastAPI + SAP HANA).
+# Holds secrets, so it is git-ignored. From this folder: cf push
+applications:
+  - name: mcp-gateway-backend
+    path: .
+    buildpacks:
+      - python_buildpack           # Python version from runtime.txt, packages from requirements.txt
+    memory: 256M
+    disk_quota: 512M
+    instances: 1
+    # The code imports itself as `backend.*`, but CF unpacks this folder as /home/vcap/app, so link it as `backend`.
+    command: >-
+      mkdir -p /tmp/pkg && ln -sfn "$HOME" /tmp/pkg/backend &&
+      PYTHONPATH=/tmp/pkg${PYTHONPATH:+:$PYTHONPATH}
+      exec uvicorn backend.main:app --host 0.0.0.0 --port "$PORT" --proxy-headers --forwarded-allow-ips '*'
+    # Port check, not /api/health: a short HANA outage should not make CF restart the app.
+    health-check-type: port
+    # Uncomment to pin a hostname instead of the default <name>.<your-cf-domain>:
+    # routes:
+    #   - route: mcp-gateway-backend.<your-cf-domain>
+    env:
+      # Settings come from here, not backend/.env (.cfignore keeps .env out of the push).
+      # Values copied from backend/.env; keep the two in step.
+      HANA_HOST: "fdddfefe-e600-4b7f-b032-4f8fd05ec060.hna0.prod-us10.hanacloud.ondemand.com"
+      HANA_PORT: "443"
+      HANA_USER: "AI_USE_CASES_HDI_DB_1_9YUM85CO7FKDBO5H0FRK2Q2VA_RT"
+      HANA_PASSWORD: "Tn2FxjyBoXe6c.xQagv6lizP7SGgqd8ZSg4gmHGakSryuDH5vOAemDRqsr-jovT7Ov2c_oxC.tOHET1BrLuz895OMHYke_WJqlX_xSjA85.N0yjn.X5GZ.uo8L0pXH40"
+      HANA_SCHEMA: "AI_USE_CASES_HDI_DB_1"
+      USER_TABLE: "user_mgs"
+      MCP_SERVER_TABLE: "mcp_app_mgs"
+      MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE: "client_to_gateway_mcp_api_key_mgs"
+      MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE: "client_to_gateway_mcp_api_key_mapping_mgs"
+      REVOKED_TOKEN_TABLE: "revoked_token_mgs"
+      BACKEND_CORS_ORIGINS: "http://localhost:5173"  # local value from .env: change to the deployed URL
+      JWT_SECRET: "OYzxTSXgFMTm8oH5dpZD0V53bw40ASrxOKkkz5ZyygQBJcQPtdft7t3jZdYx0BFH"
+      JWT_EXPIRE_MINUTES: "480"
+      ADMIN_REGISTER_KEY: "rKNRGW6M1cqzjUrqRxlWEfghQFE_LRXdVf5dWAakJME"
+      GATEWAY_RELOAD_URL: "http://127.0.0.1:8080/internal/reload"  # local value from .env: change to the deployed URL
+      GATEWAY_RELOAD_SECRET: "bDy5txcuYSFaF_HEb3X_OoAG1cKrsf5oF0dA1pMNws0k-QaC_63h1juupI7ubkEX"
+      GATEWAY_RELOAD_TIMEOUT: "10"
