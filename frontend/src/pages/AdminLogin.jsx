@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Eye, EyeOff, Shield, User } from 'lucide-react';
-import Logo from '../components/Logo.jsx';
+import AuthShell from '../components/AuthShell.jsx';
 import { homeFor, useAuth } from '../context/AuthContext.jsx';
 
 /** Login page for both account types: mode 'admin' -> POST /api/admin/login, 'user' -> POST /api/user/login. */
@@ -33,12 +33,8 @@ export default function AdminLogin({ mode = 'admin' }) {
   };
 
   return (
-    <div className="auth-page">
-      <header className="auth-header">
-        <Logo size={40} large />
-      </header>
-
-      <form className="card login-card" onSubmit={submit}>
+    <AuthShell>
+      <form className="auth-panel login-card" onSubmit={submit}>
         <button type="button" className="link-back" onClick={() => navigate('/')}>
           <ArrowLeft size={16} /> Back
         </button>
@@ -83,6 +79,6 @@ export default function AdminLogin({ mode = 'admin' }) {
           {busy ? 'Signing in...' : 'Sign In'}
         </button>
       </form>
-    </div>
+    </AuthShell>
   );
 }
