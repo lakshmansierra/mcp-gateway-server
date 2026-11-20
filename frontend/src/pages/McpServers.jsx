@@ -1,32 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Eye, EyeOff, KeyRound, Plus, RefreshCw, Search, Server, Trash2, X } from 'lucide-react';
-import { useAuth } from '../context/AuthContext.jsx';
+import { Pencil, Plus, RefreshCw, Search, Server, Trash2 } from 'lucide-react';
 import AddServerModal from '../components/AddServerModal.jsx';
-import GenerateApiModal from '../components/GenerateApiModal.jsx';
-import KeyCell from '../components/KeyCell.jsx';
 import { ConfirmDialog } from '../components/Modal.jsx';
 import SortHeader, { useSort } from '../components/SortHeader.jsx';
-import { formatDate, listServers, setServerStatus, softDeleteServer, TRANSPORTS } from '../services/mcpService.js';
+import { useToast } from '../components/Toast.jsx';
+import { deleteServer, formatDate, listServers, TRANSPORTS, updateServer } from '../services/mcpService.js';
 
 export default function McpServers() {
-  const { isAdmin } = useAuth();
+  const notify = useToast();
   const [servers, setServers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
-  const [revealAll, setRevealAll] = useState(false);
-  const [showAdd, setShowAdd] = useState(false);
+  const [editing, setEditing] = useState(null); // null | 'new' | server
   const [toDelete, setToDelete] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [selected, setSelected] = useState(() => new Set());
-  const [showGenerate, setShowGenerate] = useState(false);
-  const canSelect = !isAdmin;
+  const [toggling, setToggling] = useState(() => new Set());
 
-  const load = useCallback(async () => {
+  const load = useCallback(() => {
     setLoading(true);
-    const list = await listServers();
-    setServers(list);
-    // drop selections for servers that disappeared or went inactive
-    setSelected((sel) => new Set(list.filter((s) => s.status === 'active' && sel.has(s.id)).map((s) => s.id)));
+    setServers(listServers());
     setLoading(false);
   }, []);
 
@@ -36,45 +28,46 @@ export default function McpServers() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return q ? servers.filter((s) => s.name.toLowerCase().includes(q) || s.url.toLowerCase().includes(q)) : servers;
+    return q ? servers.filter((s) => s.server_name.toLowerCase().includes(q) || s.server_url.toLowerCase().includes(q)) : servers;
   }, [servers, query]);
 
-  const { sorted, sort, toggle } = useSort(filtered, 'createdAt', 'desc');
+  const { sorted, sort, toggle } = useSort(filtered, 'created_at', 'desc');
 
   const confirmDelete = async () => {
     setBusy(true);
-    await softDeleteServer(toDelete.id);
-    setBusy(false);
-    setToDelete(null);
-    load();
+    try {
+      await deleteServer(toDelete.id);
+      notify(`"${toDelete.server_name}" moved to Deleted Servers.`);
+      setToDelete(null);
+    } catch (err) {
+      notify(err.message, 'error');
+    } finally {
+      setBusy(false);
+      load();
+    }
   };
 
-  const toggleStatus = async (s) => {
-    const next = s.status === 'active' ? 'inactive' : 'active';
-    setServers((list) => list.map((x) => (x.id === s.id ? { ...x, status: next } : x)));
-    await setServerStatus(s.id, next);
+  const toggleEnabled = async (s) => {
+    const enabled = !s.enabled;
+    setToggling((t) => new Set(t).add(s.id));
+    setServers((list) => list.map((x) => (x.id === s.id ? { ...x, enabled } : x)));
+    try {
+      await updateServer(s.id, { enabled });
+      notify(`"${s.server_name}" ${enabled ? 'enabled' : 'disabled'}.`);
+    } catch (err) {
+      notify(err.message, 'error');
+    } finally {
+      setToggling((t) => {
+        const next = new Set(t);
+        next.delete(s.id);
+        return next;
+      });
+      load();
+    }
   };
 
-  const activeCount = servers.filter((s) => s.status === 'active').length;
-  const colCount = isAdmin ? 8 : 7;
-
-  const selectable = sorted.filter((s) => s.status === 'active');
-  const allVisibleSelected = selectable.length > 0 && selectable.every((s) => selected.has(s.id));
-  const selectedServers = servers.filter((s) => selected.has(s.id));
-
-  const toggleOne = (id) =>
-    setSelected((sel) => {
-      const next = new Set(sel);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-
-  const toggleAllVisible = () =>
-    setSelected((sel) => {
-      const next = new Set(sel);
-      selectable.forEach((s) => (allVisibleSelected ? next.delete(s.id) : next.add(s.id)));
-      return next;
-    });
+  const activeCount = servers.filter((s) => s.enabled).length;
+  const colCount = 8;
 
   return (
     <div className="page">
@@ -85,9 +78,7 @@ export default function McpServers() {
           </div>
           <div>
             <h1>MCP Servers</h1>
-            <p className="muted">
-              {canSelect ? 'Select one or more active servers to generate a gateway API' : 'Servers registered with the gateway'}
-            </p>
+            <p className="muted">Servers you registered or changed from this browser</p>
           </div>
         </div>
         <button className="btn btn-outline" onClick={load}>
@@ -104,11 +95,9 @@ export default function McpServers() {
           <strong className="ok">{activeCount}</strong>
           <span>Active<br />Servers</span>
         </div>
-        {isAdmin && (
-          <button className="add-tile" onClick={() => setShowAdd(true)} title="Add MCP server" aria-label="Add MCP server">
-            <Plus size={28} />
-          </button>
-        )}
+        <button className="add-tile" onClick={() => setEditing('new')} title="Add MCP server" aria-label="Add MCP server">
+          <Plus size={28} />
+        </button>
       </div>
 
       <div className="card table-card">
@@ -120,124 +109,77 @@ export default function McpServers() {
           <span className="muted">{filtered.length} servers</span>
         </div>
 
-        {canSelect && selected.size > 0 && (
-          <div className="selection-bar">
-            <span>
-              <strong>{selected.size}</strong> server{selected.size === 1 ? '' : 's'} selected
-            </span>
-            <button className="btn-text" onClick={() => setSelected(new Set())}>
-              <X size={15} /> Clear
-            </button>
-            <button className="btn btn-primary" onClick={() => setShowGenerate(true)}>
-              <KeyRound size={16} /> Generate Gateway API
-            </button>
-          </div>
-        )}
-
         <div className="table-scroll">
           <table className="table">
             <thead>
               <tr>
-                {canSelect && (
-                  <th className="check-cell">
-                    <input
-                      type="checkbox"
-                      checked={allVisibleSelected}
-                      onChange={toggleAllVisible}
-                      disabled={selectable.length === 0}
-                      aria-label="Select all active servers"
-                    />
-                  </th>
-                )}
                 <SortHeader label="ID" field="id" sort={sort} onSort={toggle} />
-                <SortHeader label="Server Name" field="name" sort={sort} onSort={toggle} />
+                <SortHeader label="Server Name" field="server_name" sort={sort} onSort={toggle} />
                 <th>Endpoint</th>
                 <th>Transport</th>
-                {isAdmin && (
-                  <th>
-                    <div className="th-key">
-                      Gateway Key
-                      <button className="icon-btn subtle" onClick={() => setRevealAll((r) => !r)} title={revealAll ? 'Hide all keys' : 'Show all keys'}>
-                        {revealAll ? <Eye size={17} /> : <EyeOff size={17} />}
-                      </button>
-                    </div>
-                  </th>
-                )}
+                <SortHeader label="Timeout" field="timeout_seconds" sort={sort} onSort={toggle} />
                 <th>Status</th>
-                <SortHeader label="Created Date" field="createdAt" sort={sort} onSort={toggle} />
-                {isAdmin && <th className="center">Action</th>}
+                <SortHeader label="Created Date" field="created_at" sort={sort} onSort={toggle} />
+                <th className="center">Action</th>
               </tr>
             </thead>
             <tbody>
               {loading && servers.length === 0 ? (
                 <tr><td colSpan={colCount} className="empty">Loading...</td></tr>
               ) : sorted.length === 0 ? (
-                <tr><td colSpan={colCount} className="empty">{query ? 'No servers match your search' : 'No MCP servers registered yet'}</td></tr>
+                <tr><td colSpan={colCount} className="empty">{query ? 'No servers match your search' : 'No MCP servers registered from this browser yet'}</td></tr>
               ) : (
-                sorted.map((s) => (
-                  <tr key={s.id} className={selected.has(s.id) ? 'selected' : ''}>
-                    {canSelect && (
-                      <td className="check-cell">
-                        <input
-                          type="checkbox"
-                          checked={selected.has(s.id)}
-                          onChange={() => toggleOne(s.id)}
-                          disabled={s.status !== 'active'}
-                          title={s.status !== 'active' ? 'Inactive servers cannot be added' : undefined}
-                          aria-label={`Select ${s.name}`}
-                        />
+                sorted.map((s) => {
+                  const status = s.enabled ? 'active' : 'inactive';
+                  return (
+                    <tr key={s.id}>
+                      <td className="id-cell">{s.id}</td>
+                      <td>
+                        <div className="name-cell">
+                          <strong>{s.server_name}</strong>
+                          <small className="muted">Tools: {s.server_name}__*</small>
+                        </div>
                       </td>
-                    )}
-                    <td className="id-cell">{s.id}</td>
-                    <td>
-                      <div className="name-cell">
-                        <strong>{s.name}</strong>
-                        {s.description && <small className="muted">{s.description}</small>}
-                      </div>
-                    </td>
-                    <td><code className="url">{s.url}</code></td>
-                    <td><span className="tag">{TRANSPORTS[s.transport] || s.transport}</span></td>
-                    {isAdmin && <td><KeyCell value={s.apiKey} revealedAll={revealAll} /></td>}
-                    <td>
-                      {isAdmin ? (
-                        <button className={`status-pill ${s.status}`} onClick={() => toggleStatus(s)} title="Click to toggle">
-                          {s.status === 'active' ? 'Active' : 'Inactive'}
+                      <td><code className="url">{s.server_url}</code></td>
+                      <td><span className="tag">{TRANSPORTS[s.transport] || s.transport}</span></td>
+                      <td className="nowrap">{s.timeout_seconds}s</td>
+                      <td>
+                        <button
+                          className={`status-pill ${status}`}
+                          onClick={() => toggleEnabled(s)}
+                          disabled={toggling.has(s.id)}
+                          title={s.enabled ? 'Click to disable' : 'Click to enable'}
+                        >
+                          {s.enabled ? 'Active' : 'Inactive'}
                         </button>
-                      ) : (
-                        <span className={`status-pill ${s.status}`}>{s.status === 'active' ? 'Active' : 'Inactive'}</span>
-                      )}
-                    </td>
-                    <td className="nowrap">{formatDate(s.createdAt)}</td>
-                    {isAdmin && (
-                      <td className="center">
+                      </td>
+                      <td className="nowrap">{formatDate(s.created_at)}</td>
+                      <td className="center nowrap">
+                        <button className="icon-btn" onClick={() => setEditing(s)} title="Edit server">
+                          <Pencil size={17} />
+                        </button>
                         <button className="icon-btn danger-hover" onClick={() => setToDelete(s)} title="Remove server">
                           <Trash2 size={17} />
                         </button>
                       </td>
-                    )}
-                  </tr>
-                ))
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
         </div>
       </div>
 
-      {showAdd && (
+      {editing && (
         <AddServerModal
-          onClose={() => setShowAdd(false)}
-          onAdded={() => {
-            setShowAdd(false);
+          server={editing === 'new' ? null : editing}
+          onClose={() => setEditing(null)}
+          onSaved={(s) => {
+            notify(editing === 'new' ? `"${s.server_name}" registered with the gateway.` : `"${s.server_name}" updated.`);
+            setEditing(null);
             load();
           }}
-        />
-      )}
-
-      {showGenerate && (
-        <GenerateApiModal
-          servers={selectedServers}
-          onClose={() => setShowGenerate(false)}
-          onGenerated={() => setSelected(new Set())}
         />
       )}
 
@@ -246,7 +188,7 @@ export default function McpServers() {
           title="Remove MCP server?"
           message={
             <>
-              <strong>{toDelete.name}</strong> will be disconnected from the gateway and moved to Deleted Servers. You can restore it from there.
+              <strong>{toDelete.server_name}</strong> will be disconnected from the gateway and moved to Deleted Servers. You can restore it from there.
             </>
           }
           confirmLabel="Remove"

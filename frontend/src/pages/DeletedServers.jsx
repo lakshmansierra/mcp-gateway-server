@@ -1,21 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Eye, EyeOff, RefreshCw, RotateCcw, Search, Trash2 } from 'lucide-react';
-import KeyCell from '../components/KeyCell.jsx';
+import { RefreshCw, RotateCcw, Search, Trash2 } from 'lucide-react';
 import { ConfirmDialog } from '../components/Modal.jsx';
 import SortHeader, { useSort } from '../components/SortHeader.jsx';
-import { formatDate, listServers, purgeServer, restoreServer } from '../services/mcpService.js';
+import { useToast } from '../components/Toast.jsx';
+import { formatDate, listServers, restoreServer } from '../services/mcpService.js';
 
 export default function DeletedServers() {
+  const notify = useToast();
   const [servers, setServers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
-  const [revealAll, setRevealAll] = useState(false);
-  const [pending, setPending] = useState(null); // { server, action: 'restore' | 'purge' }
+  const [toRestore, setToRestore] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(() => {
     setLoading(true);
-    setServers(await listServers({ deleted: true }));
+    setServers(listServers({ deleted: true }));
     setLoading(false);
   }, []);
 
@@ -25,18 +25,23 @@ export default function DeletedServers() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return q ? servers.filter((s) => s.name.toLowerCase().includes(q)) : servers;
+    return q ? servers.filter((s) => s.server_name.toLowerCase().includes(q)) : servers;
   }, [servers, query]);
 
-  const { sorted, sort, toggle } = useSort(filtered, 'deletedAt', 'desc');
+  const { sorted, sort, toggle } = useSort(filtered, 'deleted_at', 'desc');
 
   const confirm = async () => {
     setBusy(true);
-    if (pending.action === 'restore') await restoreServer(pending.server.id);
-    else await purgeServer(pending.server.id);
-    setBusy(false);
-    setPending(null);
-    load();
+    try {
+      const s = await restoreServer(toRestore.id);
+      notify(`"${s.server_name}" restored${s.enabled ? ' and reconnected to the gateway' : ' (still disabled)'}.`);
+      setToRestore(null);
+    } catch (err) {
+      notify(err.message, 'error');
+    } finally {
+      setBusy(false);
+      load();
+    }
   };
 
   return (
@@ -48,7 +53,7 @@ export default function DeletedServers() {
           </div>
           <div>
             <h1>Deleted Servers</h1>
-            <p className="muted">Soft-deleted MCP servers. Restore them or remove them permanently here.</p>
+            <p className="muted">Soft-deleted MCP servers. Their names stay reserved; restore them here.</p>
           </div>
         </div>
         <button className="btn btn-outline" onClick={load}>
@@ -77,17 +82,10 @@ export default function DeletedServers() {
             <thead>
               <tr>
                 <SortHeader label="ID" field="id" sort={sort} onSort={toggle} />
-                <SortHeader label="Server Name" field="name" sort={sort} onSort={toggle} />
-                <th>
-                  <div className="th-key">
-                    Gateway Key
-                    <button className="icon-btn subtle" onClick={() => setRevealAll((r) => !r)} title={revealAll ? 'Hide all keys' : 'Show all keys'}>
-                      {revealAll ? <Eye size={17} /> : <EyeOff size={17} />}
-                    </button>
-                  </div>
-                </th>
-                <SortHeader label="Deleted At" field="deletedAt" sort={sort} onSort={toggle} />
-                <SortHeader label="Created Date" field="createdAt" sort={sort} onSort={toggle} />
+                <SortHeader label="Server Name" field="server_name" sort={sort} onSort={toggle} />
+                <th>Endpoint</th>
+                <SortHeader label="Deleted At" field="deleted_at" sort={sort} onSort={toggle} />
+                <SortHeader label="Created Date" field="created_at" sort={sort} onSort={toggle} />
                 <th className="center">Action</th>
               </tr>
             </thead>
@@ -100,16 +98,13 @@ export default function DeletedServers() {
                 sorted.map((s) => (
                   <tr key={s.id}>
                     <td className="id-cell">{s.id}</td>
-                    <td><strong>{s.name}</strong></td>
-                    <td><KeyCell value={s.apiKey} revealedAll={revealAll} /></td>
-                    <td className="nowrap deleted-date">{formatDate(s.deletedAt)}</td>
-                    <td className="nowrap">{formatDate(s.createdAt)}</td>
+                    <td><strong>{s.server_name}</strong></td>
+                    <td><code className="url">{s.server_url}</code></td>
+                    <td className="nowrap deleted-date">{formatDate(s.deleted_at)}</td>
+                    <td className="nowrap">{formatDate(s.created_at)}</td>
                     <td className="center nowrap">
-                      <button className="icon-btn" onClick={() => setPending({ server: s, action: 'restore' })} title="Restore server">
+                      <button className="icon-btn" onClick={() => setToRestore(s)} title="Restore server">
                         <RotateCcw size={17} />
-                      </button>
-                      <button className="icon-btn danger-hover" onClick={() => setPending({ server: s, action: 'purge' })} title="Delete permanently">
-                        <Trash2 size={17} />
                       </button>
                     </td>
                   </tr>
@@ -120,25 +115,18 @@ export default function DeletedServers() {
         </div>
       </div>
 
-      {pending && (
+      {toRestore && (
         <ConfirmDialog
-          title={pending.action === 'restore' ? 'Restore MCP server?' : 'Delete permanently?'}
+          title="Restore MCP server?"
           message={
-            pending.action === 'restore' ? (
-              <>
-                <strong>{pending.server.name}</strong> will be moved back to MCP Servers and reconnected to the gateway.
-              </>
-            ) : (
-              <>
-                <strong>{pending.server.name}</strong> and its gateway key will be permanently removed. This cannot be undone.
-              </>
-            )
+            <>
+              <strong>{toRestore.server_name}</strong> will be moved back to MCP Servers with its previous settings, and keys mapped to it can use it again.
+            </>
           }
-          confirmLabel={pending.action === 'restore' ? 'Restore' : 'Delete permanently'}
-          danger={pending.action === 'purge'}
+          confirmLabel="Restore"
           busy={busy}
           onConfirm={confirm}
-          onClose={() => setPending(null)}
+          onClose={() => setToRestore(null)}
         />
       )}
     </div>
