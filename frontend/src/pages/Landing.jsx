@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 
 export default function Landing() {
   const navigate = useNavigate();
-  const { continueAsUser } = useAuth();
+  const { notice } = useAuth();
 
   return (
     <div className="auth-page">
@@ -13,13 +13,15 @@ export default function Landing() {
         <Logo size={40} large />
       </header>
 
+      {notice && <div className="alert-info auth-notice">{notice}</div>}
+
       <div className="choice-grid">
         <div className="card choice-card">
           <div className="icon-tile">
             <Shield size={24} strokeWidth={1.75} />
           </div>
           <h3>Admin Portal</h3>
-          <p className="muted">Full access to all pages, including adding, removing and restoring MCP servers.</p>
+          <p className="muted">Register and manage MCP servers, user accounts and gateway API keys.</p>
           <button className="btn btn-primary btn-block" onClick={() => navigate('/login')}>
             Login <ArrowRight size={17} />
           </button>
@@ -30,15 +32,9 @@ export default function Landing() {
             <User size={24} strokeWidth={1.75} />
           </div>
           <h3>User Access</h3>
-          <p className="muted">Pick one or more MCP servers and generate a gateway API for them. No login required.</p>
-          <button
-            className="btn btn-outline btn-block"
-            onClick={() => {
-              continueAsUser();
-              navigate('/dashboard');
-            }}
-          >
-            Continue <ArrowRight size={17} />
+          <p className="muted">Sign in with the account your admin created and generate gateway API keys for their MCP servers.</p>
+          <button className="btn btn-outline btn-block" onClick={() => navigate('/user-login')}>
+            Login <ArrowRight size={17} />
           </button>
         </div>
       </div>

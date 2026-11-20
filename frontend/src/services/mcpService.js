@@ -1,192 +1,241 @@
 /**
- * MCP server registry service.
+ * MCP Gateway backend API: one function per endpoint in the backend's OpenAPI (Swagger) docs.
  *
- * Currently backed by localStorage so the UI works standalone.
- * To connect a real backend, replace each function body with a fetch() call
- * to your gateway API. The function signatures and return shapes can stay the same.
+ * Request bodies match the backend schemas exactly (LoginRequest, ServerCreate, ServerUpdate, KeyCreate,
+ * KeyServersUpdate, RegisterRequest, PasswordChange, PasswordReset). Every successful response is also
+ * written to the local registry (see registry.js), because the backend offers no list endpoints.
+ *
+ * POST /api/admin/register is intentionally not wrapped here.
  */
 
-const STORAGE_KEY = 'mcp_gateway_servers';
+import { ApiError, currentSession, request } from './api.js';
+import * as registry from './registry.js';
 
-const delay = (ms = 250) => new Promise((r) => setTimeout(r, ms));
+/* ---------- Constants ---------- */
 
-function generateKey() {
-  const bytes = new Uint8Array(24);
-  crypto.getRandomValues(bytes);
-  return 'mcpg_' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-}
+/** ServerCreate.transport enum */
+export const TRANSPORTS = {
+  streamable_http: 'Streamable HTTP',
+  sse: 'SSE',
+};
 
-const SEED = [
-  { name: 'GitHub MCP', url: 'https://mcp.github.example.com/mcp', transport: 'streamable-http', authType: 'bearer', description: 'Repositories, issues and pull requests', createdAt: '2026-10-02T09:12:00Z' },
-  { name: 'SAP S/4HANA Connector', url: 'https://s4-mcp.internal.example.com/mcp', transport: 'streamable-http', authType: 'api-key', description: 'Business objects and OData services', createdAt: '2026-10-18T11:40:00Z' },
-  { name: 'Confluence Knowledge Base', url: 'https://wiki-mcp.example.com/sse', transport: 'sse', authType: 'bearer', description: 'Search and read wiki pages', createdAt: '2026-10-25T14:05:00Z' },
-  { name: 'Postgres Analytics', url: 'https://pg-mcp.example.com/mcp', transport: 'streamable-http', authType: 'api-key', description: 'Read-only SQL over the analytics warehouse', status: 'inactive', createdAt: '2026-11-03T08:30:00Z' },
-];
+/** Shared pattern of RegisterRequest.user_name and KeyCreate.key_name */
+export const NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
+/** ServerCreate.server_name */
+export const SERVER_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
+export const MIN_PASSWORD = 8;
 
-let memoryStore = null; // fallback when localStorage is unavailable
+/** The gateway's single MCP endpoint; API keys decide which servers a client reaches. */
+export const GATEWAY_MCP_URL = (import.meta.env.VITE_GATEWAY_MCP_URL || '').replace(/\/+$/, '');
 
-function read() {
+const me = () => currentSession()?.user || null;
+
+/** Drop a stale local record when the backend says it no longer exists. */
+async function withNotFound(collection, id, fn) {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    // stdio is no longer supported: drop servers saved by older versions
-    if (raw) return JSON.parse(raw).filter((s) => s.transport in TRANSPORTS);
-  } catch {
-    if (memoryStore) return memoryStore;
-  }
-  if (memoryStore) return memoryStore;
-  const seeded = SEED.map((s, i) => ({
-    id: i + 1,
-    status: 'active',
-    apiKey: generateKey(),
-    deletedAt: null,
-    ...s,
-  }));
-  write(seeded);
-  return seeded;
-}
-
-function write(list) {
-  memoryStore = list;
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-  } catch {
-    /* keep in memory only */
+    return await fn();
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) registry.remove(collection, id);
+    throw err;
   }
 }
 
-export async function listServers({ deleted = false } = {}) {
-  await delay();
-  return read().filter((s) => (deleted ? s.deletedAt : !s.deletedAt));
+/* ---------- Health ---------- */
+
+/** GET /api/health -> { status, database } */
+export const checkHealth = () => request('GET', '/api/health', { auth: false });
+
+/* ---------- Accounts ---------- */
+
+/**
+ * POST /api/admin/login or POST /api/user/login with LoginRequest { user_name, password }
+ * @returns TokenOut { access_token, token_type, expires_in, user }
+ */
+export function login(kind, user_name, password) {
+  const path = kind === 'admin' ? '/api/admin/login' : '/api/user/login';
+  return request('POST', path, { body: { user_name, password }, auth: false });
 }
 
-export async function listAllServers() {
-  await delay();
-  return read();
+/** POST /api/me/logout: ends this device's session only. */
+export const logout = () => request('POST', '/api/me/logout');
+
+/** POST /api/me/logout-all: ends the session on every device. */
+export const logoutAll = () => request('POST', '/api/me/logout-all');
+
+/** PATCH /api/me/password with PasswordChange { old_password, new_password }; logs out everywhere. */
+export const changePassword = (old_password, new_password) =>
+  request('PATCH', '/api/me/password', { body: { old_password, new_password } });
+
+/* ---------- MCP servers (admin) ---------- */
+
+export function listServers({ deleted = false } = {}) {
+  return registry.list('servers').filter((s) => (deleted ? s.deleted_at : !s.deleted_at));
 }
 
-export async function addServer({ name, url, transport, authType, description, status = 'active' }) {
-  await delay(400);
-  const list = read();
-  const trimmed = name.trim();
-  if (list.some((s) => !s.deletedAt && s.name.toLowerCase() === trimmed.toLowerCase())) {
-    throw new Error(`A server named "${trimmed}" already exists.`);
-  }
-  const server = {
-    id: list.reduce((max, s) => Math.max(max, s.id), 0) + 1,
-    name: trimmed,
-    url: url.trim(),
-    transport,
-    authType,
-    description: description?.trim() || '',
-    status,
-    apiKey: generateKey(),
-    createdAt: new Date().toISOString(),
-    deletedAt: null,
-  };
-  write([...list, server]);
-  return server;
-}
+export const listAllServers = () => registry.list('servers');
 
-export async function setServerStatus(id, status) {
-  await delay(150);
-  write(read().map((s) => (s.id === id ? { ...s, status } : s)));
-}
-
-export async function softDeleteServer(id) {
-  await delay();
-  write(read().map((s) => (s.id === id ? { ...s, deletedAt: new Date().toISOString() } : s)));
-}
-
-export async function restoreServer(id) {
-  await delay();
-  write(read().map((s) => (s.id === id ? { ...s, deletedAt: null } : s)));
-}
-
-export async function purgeServer(id) {
-  await delay();
-  write(read().filter((s) => s.id !== id));
-}
-
-/* ---------- User gateway APIs ---------- */
-
-const ACCESS_KEY = 'mcp_gateway_access';
-
-export const GATEWAY_BASE_URL = (import.meta.env.VITE_GATEWAY_BASE_URL || 'https://mcp-gateway.example.com').replace(/\/+$/, '');
-
-let accessMemory = null;
-
-function readAccess() {
-  try {
-    const raw = localStorage.getItem(ACCESS_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch {
-    /* fall through to memory */
-  }
-  return accessMemory || [];
-}
-
-function writeAccess(list) {
-  accessMemory = list;
-  try {
-    localStorage.setItem(ACCESS_KEY, JSON.stringify(list));
-  } catch {
-    /* keep in memory only */
-  }
-}
-
-function generateAccessId() {
-  const bytes = new Uint8Array(6);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+/**
+ * POST /api/admin/servers with ServerCreate { server_name, server_url, transport, timeout_seconds, enabled }
+ * @returns ServerOut
+ */
+export async function registerServer({ server_name, server_url, transport, timeout_seconds, enabled }) {
+  const out = await request('POST', '/api/admin/servers', {
+    body: { server_name, server_url, transport, timeout_seconds, enabled },
+  });
+  return registry.upsert('servers', { ...out, deleted_at: null });
 }
 
 /**
- * Generate one gateway API that fronts the selected MCP servers.
- * Backend equivalent: POST /api/gateway-apis { name, serverIds } -> { id, endpoint, apiKey, ... }
+ * PATCH /api/admin/servers/{id} with ServerUpdate: only the fields to change.
+ * @returns ServerOut
  */
-export async function generateGatewayApi({ name, serverIds }) {
-  await delay(500);
-  const ids = [...new Set(serverIds)];
-  if (ids.length === 0) throw new Error('Select at least one MCP server.');
-  const servers = read().filter((s) => ids.includes(s.id) && !s.deletedAt);
-  if (servers.length !== ids.length) throw new Error('Some selected servers are no longer available. Refresh and try again.');
-  const inactive = servers.filter((s) => s.status !== 'active');
-  if (inactive.length) throw new Error(`Inactive servers cannot be added: ${inactive.map((s) => s.name).join(', ')}`);
-
-  const id = generateAccessId();
-  const api = {
-    id,
-    name: name?.trim() || `Gateway API ${id.slice(0, 4).toUpperCase()}`,
-    serverIds: servers.map((s) => s.id),
-    serverNames: servers.map((s) => s.name), // snapshot, used if a server is later purged
-    endpoint: `${GATEWAY_BASE_URL}/v1/gateway/${id}/mcp`,
-    apiKey: generateKey(),
-    createdAt: new Date().toISOString(),
-  };
-  writeAccess([...readAccess(), api]);
-  return api;
+export function updateServer(id, changes) {
+  return withNotFound('servers', id, async () => {
+    const out = await request('PATCH', `/api/admin/servers/${id}`, { body: changes });
+    return registry.upsert('servers', { ...out, deleted_at: null });
+  });
 }
 
-export async function listGatewayApis() {
-  await delay();
-  return readAccess();
+/** DELETE /api/admin/servers/{id} (soft delete) -> ServerDeletedOut { server, deleted_by, deleted_at } */
+export function deleteServer(id) {
+  return withNotFound('servers', id, async () => {
+    const out = await request('DELETE', `/api/admin/servers/${id}`);
+    return registry.upsert('servers', { ...out.server, deleted_at: out.deleted_at, deleted_by: out.deleted_by });
+  });
 }
 
-export async function revokeGatewayApi(id) {
-  await delay();
-  writeAccess(readAccess().filter((a) => a.id !== id));
+/** POST /api/admin/servers/{id}/restore -> ServerOut */
+export function restoreServer(id) {
+  return withNotFound('servers', id, async () => {
+    const out = await request('POST', `/api/admin/servers/${id}/restore`);
+    return registry.upsert('servers', { ...out, deleted_at: null, deleted_by: null });
+  });
 }
 
-/** MCP client config (Claude Desktop / Cursor style) for a generated gateway API. */
-export function clientConfig(api) {
-  const key = api.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'mcp-gateway';
+/* ---------- Gateway API keys ---------- */
+
+export const listKeys = () => registry.list('keys');
+
+/**
+ * POST /api/keys with KeyCreate { key_name, server_ids? }.
+ * Admins must leave server_ids out (their keys reach every server they added); users must send at least one.
+ * @returns KeyCreatedOut, including the plain api_key (returned only this once; not stored)
+ */
+export async function createKey({ key_name, server_ids }) {
+  const body = server_ids?.length ? { key_name, server_ids } : { key_name };
+  const out = await request('POST', '/api/keys', { body });
+  const { api_key, ...rest } = out;
+  registry.upsert('keys', { ...rest, user_id: me()?.id, deleted_at: null });
+  return out;
+}
+
+/** DELETE /api/admin/keys/{id} (admin; soft delete) -> KeyDeletedOut { key, deleted_by, deleted_at } */
+export function deleteKey(id) {
+  return withNotFound('keys', id, async () => {
+    const out = await request('DELETE', `/api/admin/keys/${id}`);
+    return registry.upsert('keys', { ...out.key, deleted_at: out.deleted_at, deleted_by: out.deleted_by });
+  });
+}
+
+/** POST /api/admin/keys/{id}/restore (admin) -> KeyOut */
+export function restoreKey(id) {
+  return withNotFound('keys', id, async () => {
+    const out = await request('POST', `/api/admin/keys/${id}/restore`);
+    return registry.upsert('keys', { ...out, deleted_at: null, deleted_by: null });
+  });
+}
+
+/** PATCH /api/admin/keys/{id}/servers (admin) with KeyServersUpdate { add, remove } -> KeyOut */
+export function updateKeyServers(id, { add = [], remove = [] }) {
+  return withNotFound('keys', id, async () => {
+    const out = await request('PATCH', `/api/admin/keys/${id}/servers`, { body: { add, remove } });
+    return registry.upsert('keys', { ...out, deleted_at: null });
+  });
+}
+
+/** POST /api/admin/keys/{id}/rotate (admin) -> KeyCreatedOut with the new plain api_key (not stored) */
+export function rotateKey(id) {
+  return withNotFound('keys', id, async () => {
+    const out = await request('POST', `/api/admin/keys/${id}/rotate`);
+    const { api_key, ...rest } = out;
+    registry.upsert('keys', { ...rest, deleted_at: null });
+    return out;
+  });
+}
+
+/* ---------- Users (admin) ---------- */
+
+export const listUsers = () => registry.list('users');
+
+/** POST /api/admin/users with RegisterRequest { user_name, password } -> UserOut */
+export async function createUser({ user_name, password }) {
+  const out = await request('POST', '/api/admin/users', { body: { user_name, password } });
+  return registry.upsert('users', { ...out, deleted_at: null });
+}
+
+/**
+ * DELETE /api/admin/users/{id} -> UserDeletedOut { user, deleted_by, deleted_at, api_keys_revoked }.
+ * The backend revokes the user's keys, so the tracked ones are marked revoked too.
+ */
+export function deleteUser(id) {
+  return withNotFound('users', id, async () => {
+    const out = await request('DELETE', `/api/admin/users/${id}`);
+    registry.updateWhere(
+      'keys',
+      (k) => k.user_id === id && !k.deleted_at,
+      (k) => ({ ...k, deleted_at: out.deleted_at, deleted_by: out.deleted_by })
+    );
+    registry.upsert('users', { ...out.user, deleted_at: out.deleted_at, deleted_by: out.deleted_by });
+    return out;
+  });
+}
+
+/** POST /api/admin/users/{id}/restore -> UserOut (their keys stay revoked) */
+export function restoreUser(id) {
+  return withNotFound('users', id, async () => {
+    const out = await request('POST', `/api/admin/users/${id}/restore`);
+    return registry.upsert('users', { ...out, deleted_at: null, deleted_by: null });
+  });
+}
+
+/** PATCH /api/admin/users/{id}/password with PasswordReset { new_password } -> UserOut */
+export function resetUserPassword(id, new_password) {
+  return withNotFound('users', id, async () => {
+    const out = await request('PATCH', `/api/admin/users/${id}/password`, { body: { new_password } });
+    return registry.upsert('users', out);
+  });
+}
+
+/* ---------- Helpers ---------- */
+
+/** "3, 7 12" -> [3, 7, 12]; throws on anything that isn't a positive whole number. */
+export function parseIds(text) {
+  const parts = String(text || '')
+    .split(/[\s,]+/)
+    .filter(Boolean);
+  const ids = parts.map((p) => Number(p));
+  const bad = parts.filter((p, i) => !Number.isInteger(ids[i]) || ids[i] <= 0);
+  if (bad.length) throw new Error(`Not a valid server ID: ${bad.join(', ')}`);
+  return [...new Set(ids)];
+}
+
+/** "add, server_1__sub\nmul" -> ['add', 'server_1__sub', 'mul'] */
+export const parseNames = (text) =>
+  String(text || '')
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+/** MCP client config (Claude Desktop / Cursor / VS Code style) for a gateway API key. */
+export function clientConfig(name, apiKey) {
+  const key = String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'mcp-gateway';
   return JSON.stringify(
     {
       mcpServers: {
         [key]: {
           type: 'http',
-          url: api.endpoint,
-          headers: { Authorization: `Bearer ${api.apiKey}` },
+          url: GATEWAY_MCP_URL || '<gateway MCP URL>',
+          headers: { Authorization: `Bearer ${apiKey || '<your API key>'}` },
         },
       },
     },
@@ -194,17 +243,6 @@ export function clientConfig(api) {
     2
   );
 }
-
-export const TRANSPORTS = {
-  'streamable-http': 'Streamable HTTP',
-  sse: 'SSE',
-};
-
-export const AUTH_TYPES = {
-  none: 'None',
-  'api-key': 'API Key',
-  bearer: 'Bearer Token',
-};
 
 export const formatDate = (iso) =>
   iso ? new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '-';

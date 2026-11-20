@@ -114,6 +114,10 @@ input, select, textarea { font: inherit; color: var(--text); }
 .checkbox { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--text-2); cursor: pointer; }
 .checkbox input { width: 16px; height: 16px; accent-color: var(--accent); }
 .alert-error { background: var(--danger-soft); color: var(--danger); border-radius: var(--radius-sm); padding: 10px 14px; font-size: 14px; }
+.alert-info { background: var(--neutral-soft); color: var(--text-2); border-radius: var(--radius-sm); padding: 10px 14px; font-size: 14px; line-height: 1.5; }
+.alert-warn { background: var(--warn-soft); color: var(--warn); border-radius: var(--radius-sm); padding: 10px 14px; font-size: 14px; line-height: 1.5; }
+.field-hint { color: var(--muted); font-size: 13px; line-height: 1.45; }
+.auth-notice { width: 100%; max-width: 698px; margin: -32px 0 24px; }
 
 /* ---------- App shell ---------- */
 .app-shell { display: flex; min-height: 100%; }
@@ -214,6 +218,21 @@ input, select, textarea { font: inherit; color: var(--text); }
 .status-pill.active { background: var(--ok-soft); color: var(--ok); }
 .status-pill.inactive { background: var(--warn-soft); color: var(--warn); }
 button.status-pill:hover { filter: brightness(0.96); }
+.status-pill.deleted { background: var(--danger-soft); color: var(--danger); }
+.header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* ---------- Toasts ---------- */
+.toast-stack { position: fixed; right: 20px; bottom: 20px; z-index: 100; display: flex; flex-direction: column; gap: 10px; max-width: min(420px, calc(100vw - 32px)); }
+.toast {
+  display: flex; align-items: flex-start; gap: 10px; padding: 12px 10px 12px 14px; border-radius: var(--radius-sm);
+  background: var(--surface); border: 1px solid var(--border); box-shadow: 0 10px 30px rgba(20, 26, 43, 0.15);
+  font-size: 14px; color: var(--text-2); line-height: 1.45; animation: pop 0.18s ease;
+}
+.toast > svg { flex-shrink: 0; margin-top: 1px; }
+.toast > span { flex: 1; min-width: 0; word-break: break-word; }
+.toast.success > svg { color: var(--ok); }
+.toast.error { border-color: #f6c9c9; }
+.toast.error > svg { color: var(--danger); }
 
 /* ---------- Dashboard ---------- */
 .hero {

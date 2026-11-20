@@ -1,15 +1,23 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { RefreshCw } from 'lucide-react';
-import { formatDate, listAllServers, TRANSPORTS } from '../services/mcpService.js';
+import { checkHealth, formatDate, listAllServers, TRANSPORTS } from '../services/mcpService.js';
 
 export default function Dashboard() {
   const [all, setAll] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [health, setHealth] = useState('checking'); // 'checking' | 'ok' | 'down'
 
   const load = useCallback(async () => {
     setLoading(true);
-    setAll(await listAllServers());
+    setAll(listAllServers());
+    setHealth('checking');
+    try {
+      const h = await checkHealth();
+      setHealth(h?.status === 'ok' ? 'ok' : 'down');
+    } catch {
+      setHealth('down');
+    }
     setLoading(false);
   }, []);
 
@@ -17,8 +25,8 @@ export default function Dashboard() {
     load();
   }, [load]);
 
-  const live = all.filter((s) => !s.deletedAt);
-  const active = live.filter((s) => s.status === 'active').length;
+  const live = all.filter((s) => !s.deleted_at);
+  const active = live.filter((s) => s.enabled).length;
   const deleted = all.length - live.length;
 
   const byTransport = Object.keys(TRANSPORTS).map((t) => ({
@@ -28,7 +36,7 @@ export default function Dashboard() {
   }));
   const maxTransport = Math.max(1, ...byTransport.map((t) => t.count));
 
-  const recent = [...live].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5);
+  const recent = [...live].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 5);
 
   const stats = [
     { label: 'Registered Servers', value: live.length },
@@ -36,6 +44,8 @@ export default function Dashboard() {
     { label: 'Inactive', value: live.length - active },
     { label: 'Deleted', value: deleted },
   ];
+
+  const healthText = { checking: 'Checking backend...', ok: 'Backend & database connected', down: 'Backend unreachable' }[health];
 
   return (
     <div className="page">
@@ -45,14 +55,14 @@ export default function Dashboard() {
             <h1>Dashboard Overview</h1>
             <p>Monitor and manage the MCP servers connected to your gateway</p>
           </div>
-          <button className="btn btn-ghost" onClick={load}>
+          <button className="btn btn-ghost" onClick={load} disabled={loading}>
             <RefreshCw size={16} className={loading ? 'spin' : ''} /> Refresh
           </button>
         </div>
         <div className="hero-stats">
           <div className="hero-summary">
             <strong>Summary</strong>
-            <small>Gateway server registry</small>
+            <small>{healthText}</small>
           </div>
           {stats.map((s) => (
             <div key={s.label} className="hero-stat">
@@ -94,16 +104,19 @@ export default function Dashboard() {
             <p className="empty">No data</p>
           ) : (
             <ul className="recent-list">
-              {recent.map((s) => (
-                <li key={s.id}>
-                  <span className={`dot ${s.status}`} />
-                  <div className="recent-main">
-                    <strong>{s.name}</strong>
-                    <small className="muted">{TRANSPORTS[s.transport]} · {formatDate(s.createdAt)}</small>
-                  </div>
-                  <span className={`status-pill ${s.status}`}>{s.status === 'active' ? 'Active' : 'Inactive'}</span>
-                </li>
-              ))}
+              {recent.map((s) => {
+                const status = s.enabled ? 'active' : 'inactive';
+                return (
+                  <li key={s.id}>
+                    <span className={`dot ${status}`} />
+                    <div className="recent-main">
+                      <strong>{s.server_name}</strong>
+                      <small className="muted">{TRANSPORTS[s.transport] || s.transport} · {formatDate(s.created_at)}</small>
+                    </div>
+                    <span className={`status-pill ${status}`}>{s.enabled ? 'Active' : 'Inactive'}</span>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>

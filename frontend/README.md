@@ -1,6 +1,6 @@
 # MCP Gateway UI
 
-React (Vite) admin console for registering and managing MCP servers behind the gateway.
+React (Vite) console for the MCP Gateway backend (FastAPI + SAP HANA): register MCP servers, manage users, and generate gateway API keys.
 
 ## Run
 
@@ -10,29 +10,44 @@ npm run dev      # http://localhost:5173
 npm run build    # production build in dist/
 ```
 
+## Configuration
+
+Set at build time (`.env.development` for `npm run dev`, `.env.production` for `npm run build`):
+
+| Variable | Purpose |
+|---|---|
+| `VITE_API_BASE_URL` | Backend base URL, e.g. `https://mcp-gateway-backend.<cf-domain>`. The backend's `BACKEND_CORS_ORIGINS` must include this UI's origin. |
+| `VITE_GATEWAY_MCP_URL` | The gateway's MCP endpoint shown in client configs, e.g. `https://mcp-gateway-server.<cf-domain>/mcp/gateway` |
+
 ## Access
 
-- **Admin Portal**: demo credentials `admin` / `admin123` (see `src/context/AuthContext.jsx`). Admins can add, enable/disable, remove, restore and permanently delete MCP servers.
-- **User Access**: no login; view the dashboard and server list (admin gateway keys hidden), select one or more active MCP servers and generate a single gateway API (endpoint + API key + client config) for them.
+- **Admin Portal** (`/login` → `POST /api/admin/login`): admins manage MCP servers, users and API keys.
+- **User Access** (`/user-login` → `POST /api/user/login`): users (created by an admin) generate API keys for servers their admin registered.
+
+The login token is kept in `sessionStorage` and sent as `Authorization: Bearer`. A 401 from the backend, or the token's expiry, ends the session.
 
 ## Pages
 
-| Route | Who | Purpose |
+| Route | Who | Backend endpoints |
 |---|---|---|
-| `/` | all | Choose Admin or User access |
-| `/login` | all | Admin login |
-| `/dashboard` | admin, user | Server counts, servers by transport, recently added |
-| `/mcp-servers` | admin, user | Server list; admins get **+** to add and trash to remove |
-| `/deleted-servers` | admin | Soft-deleted servers: restore or delete permanently |
-| `/gateway-apis` | user | Generated gateway APIs: view client config, copy key, revoke |
+| `/dashboard` | admin | `GET /api/health`; server counts |
+| `/mcp-servers` | admin | `POST /api/admin/servers`, `PATCH /api/admin/servers/{id}`, `DELETE /api/admin/servers/{id}` |
+| `/deleted-servers` | admin | `POST /api/admin/servers/{id}/restore` |
+| `/users` | admin | `POST /api/admin/users`, `DELETE /api/admin/users/{id}`, `POST /api/admin/users/{id}/restore`, `PATCH /api/admin/users/{id}/password` |
+| `/gateway-apis` | admin, user | `POST /api/keys`; admins also `DELETE /api/admin/keys/{id}`, `POST …/restore`, `POST …/rotate`, `PATCH …/servers` |
+| Account (sidebar ⚙) | admin, user | `PATCH /api/me/password`, `POST /api/me/logout-all`; log out uses `POST /api/me/logout` |
 
-## Backend
+`POST /api/admin/register` is intentionally not part of the UI.
 
-All data goes through `src/services/mcpService.js`, which currently stores servers in `localStorage`.
-Replace the function bodies with `fetch()` calls to your gateway API to connect a real backend.
+All API calls live in `src/services/mcpService.js` (on top of the HTTP client in `src/services/api.js`).
 
-Generated user APIs use `VITE_GATEWAY_BASE_URL` (default `https://mcp-gateway.example.com`) to build endpoints of the form
-`<base>/v1/gateway/<id>/mcp`. Backend equivalent of `generateGatewayApi`: `POST /api/gateway-apis { name, serverIds }`.
+## Limitation: no list endpoints
+
+The backend has no `GET` endpoints for servers, keys or users. The tables are therefore built from the backend's
+responses to actions taken in this browser, stored per account in `localStorage` (`src/services/registry.js`).
+Servers, keys or users created elsewhere (another browser, Swagger, another admin) don't appear. For keys you
+didn't create here, admins can use **Manage Key by ID**. Users need the server IDs from their admin to create a key.
+Plain API keys are never stored: they're shown once, after create or rotate.
 
 ## Deploy to Cloud Foundry
 
@@ -42,20 +57,14 @@ The app is a static build served by the CF `staticfile_buildpack` (nginx).
 |---|---|
 | `manifest.yml` | App name, memory, buildpack; pushes only `dist/` |
 | `public/Staticfile` | Copied into `dist/` on build. `pushstate: enabled` serves `index.html` for deep links like `/mcp-servers`; forces HTTPS + HSTS |
-| `.env.production` | Build-time settings (`VITE_GATEWAY_BASE_URL`) |
+| `.env.production` | Build-time settings (`VITE_API_BASE_URL`, `VITE_GATEWAY_MCP_URL`) |
 
 ```bash
-# 1. Set the real gateway URL in .env.production, then build
 npm ci
 npm run build
-
-# 2. Log in and push (from the project root, where manifest.yml is)
 cf login -a <api-endpoint>
 cf target -o <org> -s <space>
 cf push
 ```
 
-Notes:
-- `VITE_*` values are baked in at build time: change `.env.production` and rebuild + push to update them.
-- Check the buildpack exists in your landscape with `cf buildpacks`. If only `nginx_buildpack` is available, it needs an `nginx.conf` in `dist/` instead of `Staticfile`.
-- Data is still stored in each browser's localStorage until `src/services/mcpService.js` is wired to the gateway backend.
+`VITE_*` values are baked in at build time: change `.env.production`, then rebuild and push.
