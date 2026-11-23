@@ -152,6 +152,8 @@ activemq-data/
 # Environments
 .env
 .envrc
+# Cloud Foundry manifests hold secrets; manifest.example.yml is the committed template
+manifest.yml
 .venv
 env/
 venv/

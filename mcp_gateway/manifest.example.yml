@@ -1,5 +1,5 @@
 # Cloud Foundry manifest for the MCP gateway (Streamable HTTP + SAP HANA).
-# Holds secrets, so it is git-ignored. From this folder: cf push
+# Template: copy to manifest.yml (git-ignored), fill in the blank values, then from this folder: cf push
 applications:
   - name: mcp-gateway-server
     path: .
@@ -40,16 +40,16 @@ applications:
       GATEWAY_HEALTH_PATH: "/health"
       GATEWAY_CLIENT_ID_HEADER: "X-MCP-Client"
       GATEWAY_RELOAD_PATH: "/internal/reload"
-      GATEWAY_RELOAD_SECRET: "bDy5txcuYSFaF_HEb3X_OoAG1cKrsf5oF0dA1pMNws0k-QaC_63h1juupI7ubkEX"
+      GATEWAY_RELOAD_SECRET: ""
       GATEWAY_USAGE_FLUSH_INTERVAL: "5"
       GATEWAY_USAGE_BUFFER_MAX: "10000"
       HANA_CONNECT_TIMEOUT: "10"
       HANA_QUERY_TIMEOUT: "30"
-      HANA_HOST: "fdddfefe-e600-4b7f-b032-4f8fd05ec060.hna0.prod-us10.hanacloud.ondemand.com"
+      HANA_HOST: ""
       HANA_PORT: "443"
-      HANA_USER: "AI_USE_CASES_HDI_DB_1_9YUM85CO7FKDBO5H0FRK2Q2VA_RT"
-      HANA_PASSWORD: "Tn2FxjyBoXe6c.xQagv6lizP7SGgqd8ZSg4gmHGakSryuDH5vOAemDRqsr-jovT7Ov2c_oxC.tOHET1BrLuz895OMHYke_WJqlX_xSjA85.N0yjn.X5GZ.uo8L0pXH40"
-      HANA_SCHEMA: "AI_USE_CASES_HDI_DB_1"
+      HANA_USER: ""
+      HANA_PASSWORD: ""
+      HANA_SCHEMA: ""
       USER_TABLE: "user_mgs"
       MCP_SERVER_TABLE: "mcp_app_mgs"
       MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE: "client_to_gateway_mcp_api_key_mgs"
