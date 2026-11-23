@@ -1,5 +1,5 @@
 # Cloud Foundry manifest for the MCP Gateway backend (FastAPI + SAP HANA).
-# Holds secrets, so it is git-ignored. From this folder: cf push
+# Template: copy to manifest.yml (git-ignored), fill in the blank values, then from this folder: cf push
 applications:
   - name: mcp-gateway-backend
     path: .
@@ -21,20 +21,23 @@ applications:
     env:
       # Settings come from here, not backend/.env (.cfignore keeps .env out of the push).
       # Values copied from backend/.env; keep the two in step.
-      HANA_HOST: "fdddfefe-e600-4b7f-b032-4f8fd05ec060.hna0.prod-us10.hanacloud.ondemand.com"
+      HANA_HOST: ""
       HANA_PORT: "443"
-      HANA_USER: "AI_USE_CASES_HDI_DB_1_9YUM85CO7FKDBO5H0FRK2Q2VA_RT"
-      HANA_PASSWORD: "Tn2FxjyBoXe6c.xQagv6lizP7SGgqd8ZSg4gmHGakSryuDH5vOAemDRqsr-jovT7Ov2c_oxC.tOHET1BrLuz895OMHYke_WJqlX_xSjA85.N0yjn.X5GZ.uo8L0pXH40"
-      HANA_SCHEMA: "AI_USE_CASES_HDI_DB_1"
+      HANA_USER: ""
+      HANA_PASSWORD: ""
+      HANA_SCHEMA: ""
       USER_TABLE: "user_mgs"
       MCP_SERVER_TABLE: "mcp_app_mgs"
       MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE: "client_to_gateway_mcp_api_key_mgs"
       MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE: "client_to_gateway_mcp_api_key_mapping_mgs"
       REVOKED_TOKEN_TABLE: "revoked_token_mgs"
+      MCP_TOOL_TABLE: "tools_mgs"
+      MCP_TOOL_CHANGE_TABLE: "tool_changes_mgs"
+      MCP_TOOL_CALL_TABLE: "tool_calls_mgs"
       BACKEND_CORS_ORIGINS: "http://localhost:5173"  # local value from .env: change to the deployed URL
-      JWT_SECRET: "OYzxTSXgFMTm8oH5dpZD0V53bw40ASrxOKkkz5ZyygQBJcQPtdft7t3jZdYx0BFH"
+      JWT_SECRET: ""
       JWT_EXPIRE_MINUTES: "480"
-      ADMIN_REGISTER_KEY: "rKNRGW6M1cqzjUrqRxlWEfghQFE_LRXdVf5dWAakJME"
-      GATEWAY_RELOAD_URL: "http://127.0.0.1:8080/internal/reload"  # local value from .env: change to the deployed URL
-      GATEWAY_RELOAD_SECRET: "bDy5txcuYSFaF_HEb3X_OoAG1cKrsf5oF0dA1pMNws0k-QaC_63h1juupI7ubkEX"
+      ADMIN_REGISTER_KEY: ""
+      GATEWAY_RELOAD_URL: "https://<gateway-app-route>/internal/reload"  # the deployed gateway's route
+      GATEWAY_RELOAD_SECRET: ""
       GATEWAY_RELOAD_TIMEOUT: "10"

@@ -8,7 +8,7 @@ from typing import NamedTuple
 from hdbcli import dbapi
 
 from backend.config import get_settings
-from backend.db import revoked_tokens
+from backend.db import api_keys, revoked_tokens
 
 
 class UserRow(NamedTuple):
@@ -25,6 +25,52 @@ _USER_COLUMNS = '"id", "user_name", "type", "created_by", "created_at"'
 def _table() -> str:
     s = get_settings()
     return s.table(s.user_table)
+
+
+def table() -> str:
+    return _table()
+
+
+def managed_ids_sql() -> str:
+    """Subquery: the ids of the accounts an admin manages, i.e. the admin and the users they created (the same rule
+    as services/ownership.py). Takes two parameters, both the admin's id: `"user_id" IN ({managed_ids_sql()})`."""
+    return f'SELECT "id" FROM {_table()} WHERE "id" = ? OR ("type" = \'user\' AND "created_by" = ?)'
+
+
+class UserListRow(NamedTuple):
+    id: int
+    user_name: str
+    type: str
+    created_by: int | None
+    created_at: datetime
+    is_deleted: int
+    deleted_by: int | None
+    deleted_at: datetime | None
+    key_count: int  # live (not deleted) API keys
+
+
+def _list_sql(where: str) -> str:
+    return (
+        f'SELECT u."id", u."user_name", u."type", u."created_by", u."created_at", u."is_deleted", u."deleted_by", '
+        f'u."deleted_at", (SELECT COUNT(*) FROM {api_keys.table()} k WHERE k."user_id" = u."id" AND k."is_deleted" = 0) '
+        f"FROM {_table()} u WHERE {where}"
+    )
+
+
+def list_created_by(cur: dbapi.Cursor, admin_id: int) -> list[UserListRow]:
+    """The users this admin created, deleted ones included, newest first."""
+    cur.execute(_list_sql('u."type" = \'user\' AND u."created_by" = ?') + ' ORDER BY u."id" DESC', (admin_id,))
+    return [UserListRow(*row) for row in cur.fetchall()]
+
+
+def get_managed(cur: dbapi.Cursor, user_id: int, admin_id: int) -> UserListRow | None:
+    """This account if the admin manages it (it is the admin, or a user they created), deleted or not; else None."""
+    cur.execute(
+        _list_sql('u."id" = ? AND (u."id" = ? OR (u."type" = \'user\' AND u."created_by" = ?))'),
+        (user_id, admin_id, admin_id),
+    )
+    row = cur.fetchone()
+    return None if row is None else UserListRow(*row)
 
 
 class LoginRow(NamedTuple):

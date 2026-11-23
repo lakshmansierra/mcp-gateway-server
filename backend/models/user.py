@@ -6,6 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
+from backend.models.api_key import KeyListOut
 from backend.security import BCRYPT_MAX_BYTES
 
 
@@ -59,6 +60,21 @@ class UserOut(BaseModel):
     type: str
     created_by: int | None  # the admin who created this account; null for admins
     created_at: datetime
+
+
+class UserListOut(UserOut):
+    """A user in the admin's lists: deleted users are included and tagged with is_deleted."""
+
+    is_deleted: bool
+    deleted_by: int | None
+    deleted_at: datetime | None
+    key_count: int  # live (not deleted) API keys
+
+
+class UserDetailOut(UserListOut):
+    """GET /api/admin/users/{user_id}: the user and all their API keys (deleted ones tagged)."""
+
+    keys: list[KeyListOut]
 
 
 class LoginRequest(BaseModel):

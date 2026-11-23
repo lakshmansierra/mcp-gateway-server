@@ -78,9 +78,7 @@ def reset_password(conn: dbapi.Connection, user_id: int, body: PasswordReset, ad
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"User {user_id} not found")
         target, is_deleted = found
         if not (target.id == admin.id or (target.type == "user" and target.created_by == admin.id)):
-            raise HTTPException(
-                status.HTTP_403_FORBIDDEN, "You can only reset your own password or those of users you created"
-            )
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"User {user_id} not found")  # another admin's: hidden
         if is_deleted:
             raise HTTPException(status.HTTP_409_CONFLICT, f"User '{target.user_name}' is deleted")
         _save_password(conn, cur, user_id, body.new_password)
@@ -109,10 +107,10 @@ def delete_user(conn: dbapi.Connection, user_id: int, admin: UserOut) -> UserDel
         if found is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"User {user_id} not found")
         user, is_deleted = found
-        if user.type != "user":
+        if user.id == admin.id:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Admins can't be deleted")
-        if user.created_by != admin.id:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "You can only delete users you created")
+        if user.type != "user" or user.created_by != admin.id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"User {user_id} not found")  # another admin's: hidden
         if is_deleted:
             raise HTTPException(status.HTTP_409_CONFLICT, f"User '{user.user_name}' is already deleted")
 
@@ -145,8 +143,10 @@ def restore_user(conn: dbapi.Connection, user_id: int, admin: UserOut) -> UserOu
         if found is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"User {user_id} not found")
         user, is_deleted = found
-        if user.type != "user":
+        if user.id == admin.id:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Only user accounts can be restored, not admins")
+        if user.type != "user" or user.created_by != admin.id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"User {user_id} not found")  # another admin's: hidden
         if not is_deleted:
             raise HTTPException(status.HTTP_409_CONFLICT, f"User '{user.user_name}' is not deleted")
         if users.deleted_by(cur, user_id) != admin.id:

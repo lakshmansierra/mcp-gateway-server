@@ -75,7 +75,7 @@ def update_server(conn: dbapi.Connection, server_id: int, body: ServerUpdate, ad
         if found is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Server {server_id} not found")
         current, is_deleted = found
-        require_admin_manages(cur, current.user_id, admin, "servers")
+        require_admin_manages(cur, current.user_id, admin, f"Server {server_id} not found")
         if is_deleted:
             raise HTTPException(status.HTTP_409_CONFLICT, f"Server '{current.server_name}' is deleted and can't be edited")
 
@@ -115,7 +115,7 @@ def restore_server(conn: dbapi.Connection, server_id: int, admin: UserOut) -> Se
         if found is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Server {server_id} not found")
         row, is_deleted = found
-        require_admin_manages(cur, row.user_id, admin, "servers")
+        require_admin_manages(cur, row.user_id, admin, f"Server {server_id} not found")
         if not is_deleted or not servers.restore(cur, server_id):
             raise HTTPException(status.HTTP_409_CONFLICT, f"Server '{row.server_name}' is not deleted")
         conn.commit()
@@ -145,7 +145,7 @@ def delete_server(conn: dbapi.Connection, server_id: int, admin: UserOut) -> Ser
         if found is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Server {server_id} not found")
         row, is_deleted = found
-        require_admin_manages(cur, row.user_id, admin, "servers")
+        require_admin_manages(cur, row.user_id, admin, f"Server {server_id} not found")
         if is_deleted:
             raise HTTPException(status.HTTP_409_CONFLICT, f"Server '{row.server_name}' is already deleted")
 
