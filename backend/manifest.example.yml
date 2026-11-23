@@ -34,7 +34,7 @@ applications:
       MCP_TOOL_TABLE: "tools_mgs"
       MCP_TOOL_CHANGE_TABLE: "tool_changes_mgs"
       MCP_TOOL_CALL_TABLE: "tool_calls_mgs"
-      BACKEND_CORS_ORIGINS: "http://localhost:5173"  # local value from .env: change to the deployed URL
+      BACKEND_CORS_ORIGINS: "https://<ui-app-route>"  # the deployed UI's URL (comma-separate several)
       JWT_SECRET: ""
       JWT_EXPIRE_MINUTES: "480"
       ADMIN_REGISTER_KEY: ""
