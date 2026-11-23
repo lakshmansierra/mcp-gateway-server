@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useOutletContext } from 'react-router-dom';
 import {
-  Activity,
+  BarChart3,
   ArrowRight,
   Bot,
   KeyRound,
@@ -16,7 +16,8 @@ import {
 } from 'lucide-react';
 import { LogoMark } from '../components/Logo.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
-import { formatDate, listAllServers, listKeys, listUsers, TRANSPORTS } from '../services/mcpService.js';
+import { LoadError } from '../components/Common.jsx';
+import { formatDate, formatMs, getUsage, listKeys, listServers, listUsers, TRANSPORTS } from '../services/mcpService.js';
 
 const TOPOLOGY_LIMIT = 5;
 
@@ -51,14 +52,20 @@ export default function Dashboard() {
   const [servers, setServers] = useState([]);
   const [keys, setKeys] = useState([]);
   const [users, setUsers] = useState([]);
+  const [usage, setUsage] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
+  // GET /api/admin/servers, /keys, /users and /usage in parallel; one failing doesn't blank the others.
   const load = useCallback(async () => {
     setLoading(true);
-    setServers(listAllServers());
-    setKeys(listKeys());
-    setUsers(listUsers());
-    await refreshHealth();
+    const [s, k, u, g] = await Promise.allSettled([listServers(), listKeys(), listUsers(), getUsage(), refreshHealth()]);
+    if (s.status === 'fulfilled') setServers(s.value);
+    if (k.status === 'fulfilled') setKeys(k.value);
+    if (u.status === 'fulfilled') setUsers(u.value);
+    if (g.status === 'fulfilled') setUsage(g.value);
+    const failed = [s, k, u, g].find((x) => x.status === 'rejected');
+    setError(failed ? failed.reason.message : '');
     setLoading(false);
   }, [refreshHealth]);
 
@@ -66,18 +73,15 @@ export default function Dashboard() {
     load();
   }, [load]);
 
-  const live = servers.filter((s) => !s.deleted_at);
+  const live = servers.filter((s) => !s.is_deleted);
   const active = live.filter((s) => s.enabled).length;
   const deleted = servers.length - live.length;
-  const liveKeys = keys.filter((k) => !k.deleted_at).length;
-  const liveUsers = users.filter((u) => !u.deleted_at).length;
+  const liveKeys = keys.filter((k) => !k.is_deleted).length;
+  const liveUsers = users.filter((u) => !u.is_deleted).length;
+  const calls = usage?.calls ?? 0;
+  const topTools = (usage?.by_tool || []).filter((t) => t.calls > 0).slice(0, 6);
+  const maxCalls = Math.max(1, ...topTools.map((t) => t.calls));
   const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
-
-  const byTransport = Object.keys(TRANSPORTS).map((t) => ({
-    key: t,
-    label: TRANSPORTS[t],
-    count: live.filter((s) => s.transport === t).length,
-  }));
 
   const recent = [...live].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
   const topology = recent.slice(0, TOPOLOGY_LIMIT);
@@ -88,6 +92,7 @@ export default function Dashboard() {
     { to: '/mcp-servers', icon: Server, title: 'Register MCP server', text: 'Connect a new upstream server to the gateway' },
     { to: '/gateway-apis', icon: KeyRound, title: 'Generate API key', text: 'Give an MCP client access through the gateway' },
     { to: '/users', icon: UserPlus, title: 'Create user', text: 'Add an account that can request its own keys' },
+    { to: '/usage', icon: BarChart3, title: 'Review tool usage', text: 'Who called which tools, errors and timeouts' },
     { to: '/deleted-servers', icon: Trash2, title: 'Review deleted servers', text: 'Restore servers removed from the gateway' },
   ];
 
@@ -111,9 +116,11 @@ export default function Dashboard() {
         </div>
       </section>
 
+      <LoadError error={error} onRetry={load} />
+
       <div className="kpi-grid">
         <KpiCard icon={Server} label="MCP Servers" value={live.length} percent={pct(active, live.length)} detail={`${active} active · ${live.length - active} inactive`} />
-        <KpiCard icon={Activity} label="Availability" value={`${pct(active, live.length)}%`} percent={pct(active, live.length)} detail="Servers enabled on the gateway" tone="green" />
+        <KpiCard icon={BarChart3} label="Tool Calls" value={calls} percent={pct(usage?.ok ?? 0, calls)} detail={calls ? `${pct(usage.ok, calls)}% ok · avg ${formatMs(usage.avg_duration_ms)}` : 'No calls yet'} tone="green" />
         <KpiCard icon={KeyRound} label="Gateway API Keys" value={liveKeys} percent={pct(liveKeys, keys.length)} detail={`${keys.length - liveKeys} revoked`} tone="cyan" />
         <KpiCard icon={Users} label="Users" value={liveUsers} percent={pct(liveUsers, users.length)} detail={`${users.length - liveUsers} deleted · ${deleted} servers deleted`} tone="indigo" />
       </div>
@@ -195,19 +202,20 @@ export default function Dashboard() {
       <div className="dash-grid">
         <div className="card panel">
           <div className="panel-head">
-            <h3>Servers by Transport</h3>
+            <h3>Most Used Tools</h3>
+            <Link to="/usage" className="link">View usage</Link>
           </div>
-          {live.length === 0 ? (
-            <p className="empty">No servers yet</p>
+          {topTools.length === 0 ? (
+            <p className="empty">No tool calls yet</p>
           ) : (
             <div className="bars">
-              {byTransport.map((t) => (
-                <div key={t.key} className="bar-row">
-                  <span className="bar-label">{t.label}</span>
+              {topTools.map((t) => (
+                <div key={t.tool_id} className="bar-row" title={t.gateway_name}>
+                  <span className="bar-label">{t.tool_name}</span>
                   <div className="bar-track">
-                    <div className="bar-fill" style={{ width: `${pct(t.count, live.length)}%` }} />
+                    <div className="bar-fill" style={{ width: `${pct(t.calls, maxCalls)}%` }} />
                   </div>
-                  <span className="bar-value">{t.count}</span>
+                  <span className="bar-value">{t.calls}</span>
                 </div>
               ))}
             </div>

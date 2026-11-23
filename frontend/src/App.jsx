@@ -8,6 +8,9 @@ import McpServers from './pages/McpServers.jsx';
 import DeletedServers from './pages/DeletedServers.jsx';
 import GatewayApis from './pages/GatewayApis.jsx';
 import Users from './pages/Users.jsx';
+import ServerDetail from './pages/ServerDetail.jsx';
+import Tools from './pages/Tools.jsx';
+import Usage from './pages/Usage.jsx';
 
 function RequireSession({ children }) {
   const { role } = useAuth();
@@ -42,9 +45,12 @@ export default function App() {
       >
         <Route path="/dashboard" element={admin(<Dashboard />)} />
         <Route path="/mcp-servers" element={admin(<McpServers />)} />
+        <Route path="/mcp-servers/:id" element={admin(<ServerDetail />)} />
         <Route path="/deleted-servers" element={admin(<DeletedServers />)} />
         <Route path="/users" element={admin(<Users />)} />
+        <Route path="/tools" element={<Tools />} />
         <Route path="/gateway-apis" element={<GatewayApis />} />
+        <Route path="/usage" element={<Usage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

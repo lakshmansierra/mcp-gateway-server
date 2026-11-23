@@ -2,14 +2,13 @@
  * MCP Gateway backend API: one function per endpoint in the backend's OpenAPI (Swagger) docs.
  *
  * Request bodies match the backend schemas exactly (LoginRequest, ServerCreate, ServerUpdate, KeyCreate,
- * KeyServersUpdate, RegisterRequest, PasswordChange, PasswordReset). Every successful response is also
- * written to the local registry (see registry.js), because the backend offers no list endpoints.
+ * KeyServersUpdate, RegisterRequest, PasswordChange, PasswordReset). Lists come straight from the backend:
+ * admins see their own and their users' rows (deleted ones tagged is_deleted), users see only what they can use.
  *
  * POST /api/admin/register is intentionally not wrapped here.
  */
 
-import { ApiError, currentSession, request } from './api.js';
-import * as registry from './registry.js';
+import { request } from './api.js';
 
 /* ---------- Constants ---------- */
 
@@ -25,19 +24,18 @@ export const NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
 export const SERVER_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
 export const MIN_PASSWORD = 8;
 
+/** tools/call outcomes recorded by the gateway */
+export const CALL_STATUSES = ['ok', 'error', 'timeout'];
+
 /** The gateway's single MCP endpoint; API keys decide which servers a client reaches. */
 export const GATEWAY_MCP_URL = (import.meta.env.VITE_GATEWAY_MCP_URL || '').replace(/\/+$/, '');
 
-const me = () => currentSession()?.user || null;
-
-/** Drop a stale local record when the backend says it no longer exists. */
-async function withNotFound(collection, id, fn) {
-  try {
-    return await fn();
-  } catch (err) {
-    if (err instanceof ApiError && err.status === 404) registry.remove(collection, id);
-    throw err;
-  }
+/** {a: 1, b: null} -> "?a=1" (empty values are left out) */
+function query(params = {}) {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+  const s = q.toString();
+  return s ? `?${s}` : '';
 }
 
 /* ---------- Health ---------- */
@@ -56,6 +54,9 @@ export function login(kind, user_name, password) {
   return request('POST', path, { body: { user_name, password }, auth: false });
 }
 
+/** GET /api/me -> UserOut: the logged-in account */
+export const getMe = () => request('GET', '/api/me');
+
 /** POST /api/me/logout: ends this device's session only. */
 export const logout = () => request('POST', '/api/me/logout');
 
@@ -68,156 +69,137 @@ export const changePassword = (old_password, new_password) =>
 
 /* ---------- MCP servers (admin) ---------- */
 
-export function listServers({ deleted = false } = {}) {
-  return registry.list('servers').filter((s) => (deleted ? s.deleted_at : !s.deleted_at));
-}
+/** GET /api/admin/servers -> ServerListOut[]: deleted and disabled ones included (is_deleted, enabled) */
+export const listServers = () => request('GET', '/api/admin/servers');
 
-export const listAllServers = () => registry.list('servers');
+/** GET /api/admin/servers/{id} -> ServerListOut */
+export const getServer = (id) => request('GET', `/api/admin/servers/${id}`);
 
-/**
- * POST /api/admin/servers with ServerCreate { server_name, server_url, transport, timeout_seconds, enabled }
- * @returns ServerOut
- */
-export async function registerServer({ server_name, server_url, transport, timeout_seconds, enabled }) {
-  const out = await request('POST', '/api/admin/servers', {
-    body: { server_name, server_url, transport, timeout_seconds, enabled },
-  });
-  return registry.upsert('servers', { ...out, deleted_at: null });
-}
+/** GET /api/admin/servers/{id}/tools -> ToolOut[] */
+export const listServerTools = (id) => request('GET', `/api/admin/servers/${id}/tools`);
 
-/**
- * PATCH /api/admin/servers/{id} with ServerUpdate: only the fields to change.
- * @returns ServerOut
- */
-export function updateServer(id, changes) {
-  return withNotFound('servers', id, async () => {
-    const out = await request('PATCH', `/api/admin/servers/${id}`, { body: changes });
-    return registry.upsert('servers', { ...out, deleted_at: null });
-  });
-}
+/** POST /api/admin/servers with ServerCreate { server_name, server_url, transport, timeout_seconds, enabled } */
+export const registerServer = ({ server_name, server_url, transport, timeout_seconds, enabled }) =>
+  request('POST', '/api/admin/servers', { body: { server_name, server_url, transport, timeout_seconds, enabled } });
+
+/** PATCH /api/admin/servers/{id} with ServerUpdate: only the fields to change. */
+export const updateServer = (id, changes) => request('PATCH', `/api/admin/servers/${id}`, { body: changes });
 
 /** DELETE /api/admin/servers/{id} (soft delete) -> ServerDeletedOut { server, deleted_by, deleted_at } */
-export function deleteServer(id) {
-  return withNotFound('servers', id, async () => {
-    const out = await request('DELETE', `/api/admin/servers/${id}`);
-    return registry.upsert('servers', { ...out.server, deleted_at: out.deleted_at, deleted_by: out.deleted_by });
-  });
-}
+export const deleteServer = (id) => request('DELETE', `/api/admin/servers/${id}`);
 
 /** POST /api/admin/servers/{id}/restore -> ServerOut */
-export function restoreServer(id) {
-  return withNotFound('servers', id, async () => {
-    const out = await request('POST', `/api/admin/servers/${id}/restore`);
-    return registry.upsert('servers', { ...out, deleted_at: null, deleted_by: null });
-  });
-}
+export const restoreServer = (id) => request('POST', `/api/admin/servers/${id}/restore`);
+
+/* ---------- Tools (admin) ---------- */
+
+/** GET /api/admin/tools?server_id= -> ToolOut[] (removed tools tagged is_removed, filtered-out ones hidden) */
+export const listTools = ({ server_id } = {}) => request('GET', `/api/admin/tools${query({ server_id })}`);
+
+/** GET /api/admin/tools/{id} -> ToolOut */
+export const getTool = (id) => request('GET', `/api/admin/tools/${id}`);
+
+/** GET /api/admin/tools/{id}/changes -> ToolChangeOut[], newest first */
+export const getToolChanges = (id) => request('GET', `/api/admin/tools/${id}/changes`);
 
 /* ---------- Gateway API keys ---------- */
 
-export const listKeys = () => registry.list('keys');
+/** GET /api/admin/keys?user_id= -> KeyListOut[]: your keys and your users' keys, deleted ones included */
+export const listKeys = ({ user_id } = {}) => request('GET', `/api/admin/keys${query({ user_id })}`);
+
+/** GET /api/admin/keys/{id} -> KeyListOut */
+export const getKey = (id) => request('GET', `/api/admin/keys/${id}`);
 
 /**
  * POST /api/keys with KeyCreate { key_name, server_ids? }.
  * Admins must leave server_ids out (their keys reach every server they added); users must send at least one.
- * @returns KeyCreatedOut, including the plain api_key (returned only this once; not stored)
+ * @returns KeyCreatedOut, including the plain api_key (returned only this once)
  */
-export async function createKey({ key_name, server_ids }) {
+export function createKey({ key_name, server_ids }) {
   const body = server_ids?.length ? { key_name, server_ids } : { key_name };
-  const out = await request('POST', '/api/keys', { body });
-  const { api_key, ...rest } = out;
-  registry.upsert('keys', { ...rest, user_id: me()?.id, deleted_at: null });
-  return out;
+  return request('POST', '/api/keys', { body });
 }
 
-/** DELETE /api/admin/keys/{id} (admin; soft delete) -> KeyDeletedOut { key, deleted_by, deleted_at } */
-export function deleteKey(id) {
-  return withNotFound('keys', id, async () => {
-    const out = await request('DELETE', `/api/admin/keys/${id}`);
-    return registry.upsert('keys', { ...out.key, deleted_at: out.deleted_at, deleted_by: out.deleted_by });
-  });
-}
+/** DELETE /api/admin/keys/{id} (soft delete) -> KeyDeletedOut */
+export const deleteKey = (id) => request('DELETE', `/api/admin/keys/${id}`);
 
-/** POST /api/admin/keys/{id}/restore (admin) -> KeyOut */
-export function restoreKey(id) {
-  return withNotFound('keys', id, async () => {
-    const out = await request('POST', `/api/admin/keys/${id}/restore`);
-    return registry.upsert('keys', { ...out, deleted_at: null, deleted_by: null });
-  });
-}
+/** POST /api/admin/keys/{id}/restore -> KeyOut */
+export const restoreKey = (id) => request('POST', `/api/admin/keys/${id}/restore`);
 
-/** PATCH /api/admin/keys/{id}/servers (admin) with KeyServersUpdate { add, remove } -> KeyOut */
-export function updateKeyServers(id, { add = [], remove = [] }) {
-  return withNotFound('keys', id, async () => {
-    const out = await request('PATCH', `/api/admin/keys/${id}/servers`, { body: { add, remove } });
-    return registry.upsert('keys', { ...out, deleted_at: null });
-  });
-}
+/** PATCH /api/admin/keys/{id}/servers with KeyServersUpdate { add, remove } -> KeyOut */
+export const updateKeyServers = (id, { add = [], remove = [] }) =>
+  request('PATCH', `/api/admin/keys/${id}/servers`, { body: { add, remove } });
 
-/** POST /api/admin/keys/{id}/rotate (admin) -> KeyCreatedOut with the new plain api_key (not stored) */
-export function rotateKey(id) {
-  return withNotFound('keys', id, async () => {
-    const out = await request('POST', `/api/admin/keys/${id}/rotate`);
-    const { api_key, ...rest } = out;
-    registry.upsert('keys', { ...rest, deleted_at: null });
-    return out;
-  });
-}
+/** POST /api/admin/keys/{id}/rotate -> KeyCreatedOut with the new plain api_key */
+export const rotateKey = (id) => request('POST', `/api/admin/keys/${id}/rotate`);
 
 /* ---------- Users (admin) ---------- */
 
-export const listUsers = () => registry.list('users');
+/** GET /api/admin/users -> UserListOut[]: users you created, deleted ones included */
+export const listUsers = () => request('GET', '/api/admin/users');
+
+/** GET /api/admin/users/{id} -> UserDetailOut: the user and all their keys */
+export const getUser = (id) => request('GET', `/api/admin/users/${id}`);
 
 /** POST /api/admin/users with RegisterRequest { user_name, password } -> UserOut */
-export async function createUser({ user_name, password }) {
-  const out = await request('POST', '/api/admin/users', { body: { user_name, password } });
-  return registry.upsert('users', { ...out, deleted_at: null });
-}
+export const createUser = ({ user_name, password }) =>
+  request('POST', '/api/admin/users', { body: { user_name, password } });
 
-/**
- * DELETE /api/admin/users/{id} -> UserDeletedOut { user, deleted_by, deleted_at, api_keys_revoked }.
- * The backend revokes the user's keys, so the tracked ones are marked revoked too.
- */
-export function deleteUser(id) {
-  return withNotFound('users', id, async () => {
-    const out = await request('DELETE', `/api/admin/users/${id}`);
-    registry.updateWhere(
-      'keys',
-      (k) => k.user_id === id && !k.deleted_at,
-      (k) => ({ ...k, deleted_at: out.deleted_at, deleted_by: out.deleted_by })
-    );
-    registry.upsert('users', { ...out.user, deleted_at: out.deleted_at, deleted_by: out.deleted_by });
-    return out;
-  });
-}
+/** DELETE /api/admin/users/{id} -> UserDeletedOut { user, deleted_by, deleted_at, api_keys_revoked } */
+export const deleteUser = (id) => request('DELETE', `/api/admin/users/${id}`);
 
 /** POST /api/admin/users/{id}/restore -> UserOut (their keys stay revoked) */
-export function restoreUser(id) {
-  return withNotFound('users', id, async () => {
-    const out = await request('POST', `/api/admin/users/${id}/restore`);
-    return registry.upsert('users', { ...out, deleted_at: null, deleted_by: null });
-  });
-}
+export const restoreUser = (id) => request('POST', `/api/admin/users/${id}/restore`);
 
 /** PATCH /api/admin/users/{id}/password with PasswordReset { new_password } -> UserOut */
-export function resetUserPassword(id, new_password) {
-  return withNotFound('users', id, async () => {
-    const out = await request('PATCH', `/api/admin/users/${id}/password`, { body: { new_password } });
-    return registry.upsert('users', out);
-  });
+export const resetUserPassword = (id, new_password) =>
+  request('PATCH', `/api/admin/users/${id}/password`, { body: { new_password } });
+
+/* ---------- Tool usage ---------- */
+
+/**
+ * Usage filters shared by the admin and user routes. Dates are 'YYYY-MM-DD' from <input type="date">, taken as
+ * whole UTC days: start at 00:00, end at the end of that day.
+ */
+function usageParams({ start, end, server_id, tool_id, user_id, key_id, status } = {}) {
+  const day = (d, add = 0) => {
+    if (!d) return undefined;
+    const t = new Date(`${d}T00:00:00Z`);
+    t.setUTCDate(t.getUTCDate() + add);
+    return t.toISOString();
+  };
+  return { start: day(start), end: day(end, 1), server_id, tool_id, user_id, key_id, status };
 }
+
+/** GET /api/admin/usage -> UsageSummaryOut (totals, by_server, by_tool, by_user) */
+export const getUsage = (filters) => request('GET', `/api/admin/usage${query(usageParams(filters))}`);
+
+/** GET /api/admin/usage/calls -> CallPageOut { total, limit, offset, items } */
+export const getCalls = (filters, { limit = 50, offset = 0 } = {}) =>
+  request('GET', `/api/admin/usage/calls${query({ ...usageParams(filters), limit, offset })}`);
+
+/* ---------- The user's own views (user accounts only) ---------- */
+
+/** GET /api/user/servers -> UserServerOut[]: your admin's enabled, live servers */
+export const listMyServers = () => request('GET', '/api/user/servers');
+
+/** GET /api/user/tools?server_id= -> UserToolOut[]: tools you can call */
+export const listMyTools = ({ server_id } = {}) => request('GET', `/api/user/tools${query({ server_id })}`);
+
+/** GET /api/user/servers/{id}/tools -> UserToolOut[] */
+export const listMyServerTools = (id) => request('GET', `/api/user/servers/${id}/tools`);
+
+/** GET /api/user/keys -> UserKeyOut[]: your live keys */
+export const listMyKeys = () => request('GET', '/api/user/keys');
+
+/** GET /api/user/usage -> MyUsageSummaryOut (totals, by_server, by_tool, by_key) */
+export const getMyUsage = (filters) => request('GET', `/api/user/usage${query(usageParams(filters))}`);
+
+/** GET /api/user/usage/calls -> CallPageOut */
+export const getMyCalls = (filters, { limit = 50, offset = 0 } = {}) =>
+  request('GET', `/api/user/usage/calls${query({ ...usageParams(filters), limit, offset })}`);
 
 /* ---------- Helpers ---------- */
-
-/** "3, 7 12" -> [3, 7, 12]; throws on anything that isn't a positive whole number. */
-export function parseIds(text) {
-  const parts = String(text || '')
-    .split(/[\s,]+/)
-    .filter(Boolean);
-  const ids = parts.map((p) => Number(p));
-  const bad = parts.filter((p, i) => !Number.isInteger(ids[i]) || ids[i] <= 0);
-  if (bad.length) throw new Error(`Not a valid server ID: ${bad.join(', ')}`);
-  return [...new Set(ids)];
-}
 
 /** "add, server_1__sub\nmul" -> ['add', 'server_1__sub', 'mul'] */
 export const parseNames = (text) =>
@@ -244,5 +226,47 @@ export function clientConfig(name, apiKey) {
   );
 }
 
+/** The backend sends UTC times without a zone ("2026-11-19T09:20:52"); read them as UTC. */
+export function parseTime(iso) {
+  if (!iso) return null;
+  const s = String(iso);
+  return new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(s) ? s : `${s}Z`);
+}
+
 export const formatDate = (iso) =>
-  iso ? new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '-';
+  iso ? parseTime(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '-';
+
+export const formatDateTime = (iso) =>
+  iso
+    ? parseTime(iso).toLocaleString('en-GB', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      })
+    : '-';
+
+/** 2608 -> "2.61 s", 921 -> "921 ms" */
+export function formatMs(ms) {
+  if (ms === null || ms === undefined) return '-';
+  return ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${Math.round(ms)} ms`;
+}
+
+/** "3 minutes ago" style */
+export function timeAgo(iso) {
+  if (!iso) return 'never';
+  const sec = Math.round((Date.now() - parseTime(iso).getTime()) / 1000);
+  if (sec < 60) return 'just now';
+  const units = [
+    ['day', 86400],
+    ['hour', 3600],
+    ['minute', 60],
+  ];
+  for (const [name, size] of units) {
+    const n = Math.floor(sec / size);
+    if (n >= 1) return `${n} ${name}${n === 1 ? '' : 's'} ago`;
+  }
+  return 'just now';
+}

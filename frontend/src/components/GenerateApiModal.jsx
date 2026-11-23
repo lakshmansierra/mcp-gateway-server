@@ -3,7 +3,8 @@ import { Check, Copy, KeyRound } from 'lucide-react';
 import Modal from './Modal.jsx';
 import KeyCell from './KeyCell.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
-import { clientConfig, createKey, GATEWAY_MCP_URL, NAME_PATTERN, parseIds } from '../services/mcpService.js';
+import { useLoader } from '../hooks/useLoader.js';
+import { clientConfig, createKey, GATEWAY_MCP_URL, listMyServers, NAME_PATTERN } from '../services/mcpService.js';
 
 export function CopyButton({ text, label = 'Copy' }) {
   const [copied, setCopied] = useState(false);
@@ -65,15 +66,28 @@ export function ApiDetails({ name, apiKey, servers }) {
   );
 }
 
-/** POST /api/keys. Users pick server IDs; admin keys reach every server the admin registered. */
-export default function GenerateApiModal({ onClose, onGenerated, serverLabel = (id) => `#${id}` }) {
+/**
+ * POST /api/keys. Users tick servers from GET /api/user/servers (their admin's enabled servers);
+ * admin keys reach every server the admin registered.
+ */
+export default function GenerateApiModal({ onClose, onGenerated }) {
   const { isAdmin } = useAuth();
+  const servers = useLoader(() => (isAdmin ? Promise.resolve([]) : listMyServers()), [isAdmin], []);
   const [name, setName] = useState('');
-  const [ids, setIds] = useState('');
+  const [picked, setPicked] = useState(() => new Set());
   const [errors, setErrors] = useState({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
+
+  const flip = (id) => {
+    setPicked((sel) => {
+      const next = new Set(sel);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+    setErrors((er) => ({ ...er, servers: undefined }));
+  };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -82,22 +96,14 @@ export default function GenerateApiModal({ onClose, onGenerated, serverLabel = (
     if (!key_name) er.name = 'Key name is required';
     else if (key_name.length > 100) er.name = 'At most 100 characters';
     else if (!NAME_PATTERN.test(key_name)) er.name = 'Use only letters, digits, ".", "_" and "-"';
-    let server_ids;
-    if (!isAdmin) {
-      try {
-        server_ids = parseIds(ids);
-        if (server_ids.length === 0) er.ids = 'Enter at least one server ID';
-      } catch (err) {
-        er.ids = err.message;
-      }
-    }
+    if (!isAdmin && picked.size === 0) er.servers = 'Pick at least one server';
     setErrors(er);
     if (Object.keys(er).length) return;
 
     setBusy(true);
     setError('');
     try {
-      const out = await createKey({ key_name, server_ids });
+      const out = await createKey({ key_name, server_ids: isAdmin ? undefined : [...picked] });
       setResult(out);
       onGenerated?.(out);
     } catch (err) {
@@ -108,9 +114,11 @@ export default function GenerateApiModal({ onClose, onGenerated, serverLabel = (
   };
 
   if (result) {
+    const byId = new Map(servers.data.map((s) => [s.id, s.server_name]));
+    const names = result.all_servers ? null : result.server_ids.map((id) => byId.get(id) || `#${id}`);
     return (
       <Modal title="Gateway API generated" subtitle={result.key_name} icon={<KeyRound size={20} />} onClose={onClose} width={600}>
-        <ApiDetails name={result.key_name} apiKey={result.api_key} servers={result.all_servers ? null : result.server_ids.map(serverLabel)} />
+        <ApiDetails name={result.key_name} apiKey={result.api_key} servers={names} />
         <div className="modal-actions">
           <button className="btn btn-primary" onClick={onClose}>Done</button>
         </div>
@@ -145,22 +153,29 @@ export default function GenerateApiModal({ onClose, onGenerated, serverLabel = (
         {isAdmin ? (
           <div className="alert-info">Admin keys reach every MCP server you registered, enabled or disabled.</div>
         ) : (
-          <label className="field">
-            <span>Server IDs</span>
-            <input
-              value={ids}
-              onChange={(e) => {
-                setIds(e.target.value);
-                setErrors((er) => ({ ...er, ids: undefined }));
-              }}
-              placeholder="e.g. 3, 7"
-            />
-            {errors.ids ? (
-              <em className="field-error">{errors.ids}</em>
+          <div className="field">
+            <span>Servers this key may reach</span>
+            {servers.error && <div className="alert-error">{servers.error}</div>}
+            {servers.loading && servers.data.length === 0 ? (
+              <p className="field-hint">Loading servers...</p>
+            ) : servers.data.length === 0 ? (
+              <p className="field-hint">Your admin hasn't added any servers yet, so you can't create a key.</p>
             ) : (
-              <small className="field-hint">IDs of enabled servers your admin registered, separated by commas. Ask your admin for them.</small>
+              <ul className="selected-list server-pick">
+                {servers.data.map((s) => (
+                  <li key={s.id}>
+                    <label className="checkbox">
+                      <input type="checkbox" checked={picked.has(s.id)} onChange={() => flip(s.id)} />
+                      <span>
+                        <strong>{s.server_name}</strong> <small className="muted">{s.tool_count} tools</small>
+                      </span>
+                    </label>
+                  </li>
+                ))}
+              </ul>
             )}
-          </label>
+            {errors.servers && <em className="field-error">{errors.servers}</em>}
+          </div>
         )}
 
         {error && <div className="alert-error">{error}</div>}
@@ -169,7 +184,7 @@ export default function GenerateApiModal({ onClose, onGenerated, serverLabel = (
           <button type="button" className="btn btn-outline" onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button type="submit" className="btn btn-primary" disabled={busy}>
+          <button type="submit" className="btn btn-primary" disabled={busy || (!isAdmin && servers.data.length === 0)}>
             {busy ? 'Generating...' : 'Generate API'}
           </button>
         </div>

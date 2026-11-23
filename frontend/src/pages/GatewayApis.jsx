@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useState } from 'react';
-import { FileCode, KeyRound, Plus, RefreshCw, RotateCcw, RotateCw, Server, Settings2, Trash2 } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { FileCode, KeyRound, Plus, RotateCcw, RotateCw, Search, Server, Trash2 } from 'lucide-react';
+import { LoadError, PageHeader, StatCard, TableState } from '../components/Common.jsx';
 import Modal, { ConfirmDialog } from '../components/Modal.jsx';
 import GenerateApiModal, { ApiDetails } from '../components/GenerateApiModal.jsx';
 import KeyServersModal from '../components/KeyServersModal.jsx';
-import ManageKeyModal from '../components/ManageKeyModal.jsx';
+import { KeyServerTags } from '../components/UserDetailModal.jsx';
+import SortHeader, { useSort } from '../components/SortHeader.jsx';
 import { useToast } from '../components/Toast.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
-import { deleteKey, formatDate, listAllServers, listKeys, listUsers, restoreKey, rotateKey } from '../services/mcpService.js';
+import { useLoader } from '../hooks/useLoader.js';
+import { deleteKey, formatDate, formatDateTime, listKeys, listMyKeys, restoreKey, rotateKey } from '../services/mcpService.js';
 
 const CONFIRM = {
   revoke: { title: 'Revoke gateway API?', label: 'Revoke', danger: true, text: 'will stop working immediately. Any client using this key will lose access. You can restore it later.' },
@@ -14,51 +17,45 @@ const CONFIRM = {
   rotate: { title: 'Rotate API key?', label: 'Rotate', danger: true, text: 'gets a new value. The current value stops working immediately, so update every client that uses it.' },
 };
 
+/** Server names of a key, for the details dialog (null = an admin key that reaches every server). */
+const serverNames = (k) => (k.all_servers ? null : k.servers.filter((s) => !s.is_deleted).map((s) => s.server_name));
+
+/**
+ * Admins: GET /api/admin/keys (their keys and their users', revoked ones included) with revoke, restore, rotate and
+ * server changes. Users: GET /api/user/keys (their live keys). Both create keys with POST /api/keys.
+ */
 export default function GatewayApis() {
   const { isAdmin, user } = useAuth();
   const notify = useToast();
-  const [keys, setKeys] = useState([]);
-  const [servers, setServers] = useState([]);
-  const [users, setUsers] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const { data, error, loading, reload } = useLoader(() => (isAdmin ? listKeys() : listMyKeys()), [isAdmin], []);
+  const [query, setQuery] = useState('');
+  const [owner, setOwner] = useState('');
+  const [status, setStatus] = useState('');
   const [showGenerate, setShowGenerate] = useState(false);
-  const [showManage, setShowManage] = useState(false);
   const [viewing, setViewing] = useState(null);
   const [editingServers, setEditingServers] = useState(null);
   const [pending, setPending] = useState(null); // { key, action: 'revoke' | 'restore' | 'rotate' }
   const [rotated, setRotated] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(() => {
-    setLoading(true);
-    setKeys([...listKeys()].sort((x, y) => String(y.created_at).localeCompare(String(x.created_at))));
-    setServers(listAllServers());
-    setUsers(listUsers());
-    setLoading(false);
-  }, []);
+  // User keys come without these fields: they are always the user's own, live, and never admin keys.
+  const keys = useMemo(
+    () => data.map((k) => ({ all_servers: false, is_deleted: false, user_id: user?.id, user_name: user?.user_name, ...k })),
+    [data, user]
+  );
+  const owners = useMemo(() => {
+    const m = new Map(keys.map((k) => [k.user_id, k.user_name]));
+    return [...m.entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1])));
+  }, [keys]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const serverLabel = (id) => {
-    const s = servers.find((x) => x.id === id);
-    return s ? s.server_name : `#${id}`;
-  };
-
-  // State of a server behind a key, when this browser knows it: active, inactive or removed.
-  const serverState = (id) => {
-    const s = servers.find((x) => x.id === id);
-    if (!s) return null;
-    if (s.deleted_at) return 'removed';
-    return s.enabled ? 'active' : 'inactive';
-  };
-
-  const ownerLabel = (k) => {
-    if (k.user_id === user?.id) return 'You';
-    const u = users.find((x) => x.id === k.user_id);
-    return u ? u.user_name : k.user_id ? `User #${k.user_id}` : '-';
-  };
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return keys
+      .filter((k) => !owner || String(k.user_id) === owner)
+      .filter((k) => !status || (status === 'revoked' ? k.is_deleted : !k.is_deleted))
+      .filter((k) => !q || k.key_name.toLowerCase().includes(q) || k.servers.some((s) => s.server_name.toLowerCase().includes(q)));
+  }, [keys, owner, status, query]);
+  const { sorted, sort, toggle } = useSort(filtered, 'created_at', 'desc');
 
   const confirm = async () => {
     const { key, action } = pending;
@@ -71,7 +68,8 @@ export default function GatewayApis() {
         await restoreKey(key.id);
         notify(`"${key.key_name}" restored.`);
       } else {
-        setRotated(await rotateKey(key.id));
+        const out = await rotateKey(key.id);
+        setRotated({ ...out, names: serverNames(key) });
         notify(`"${key.key_name}" rotated. Copy the new key now.`);
       }
       setPending(null);
@@ -79,136 +77,131 @@ export default function GatewayApis() {
       notify(err.message, 'error');
     } finally {
       setBusy(false);
-      load();
+      reload();
     }
   };
 
-  const activeCount = keys.filter((k) => !k.deleted_at).length;
-  const colCount = isAdmin ? 7 : 6;
+  const activeCount = keys.filter((k) => !k.is_deleted).length;
+  const cols = isAdmin ? 7 : 5;
 
   return (
     <div className="page">
-      <div className="page-header">
-        <div className="page-title">
-          <div className="icon-tile">
-            <KeyRound size={20} />
-          </div>
-          <div>
-            <h1>{isAdmin ? 'Gateway APIs' : 'My Gateway APIs'}</h1>
-            <p className="muted">
-              {isAdmin
-                ? 'API keys created or managed from this browser. Clients send them to the gateway endpoint.'
-                : 'Keys you generated in this browser. Ask your admin to revoke or change a key.'}
-            </p>
-          </div>
-        </div>
-        <div className="header-actions">
-          {isAdmin && (
-            <button className="btn btn-outline" onClick={() => setShowManage(true)}>
-              <Settings2 size={16} /> Manage Key by ID
-            </button>
-          )}
-          <button className="btn btn-outline" onClick={load}>
-            <RefreshCw size={16} className={loading ? 'spin' : ''} /> Refresh
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        icon={KeyRound}
+        title={isAdmin ? 'Gateway APIs' : 'My Gateway APIs'}
+        subtitle={
+          isAdmin
+            ? 'Your API keys and your users’ keys. Clients send them to the gateway endpoint.'
+            : 'Your API keys. Ask your admin to revoke, rotate or change the servers of a key.'
+        }
+        loading={loading}
+        onRefresh={reload}
+      />
+      <LoadError error={error} onRetry={reload} />
 
       <div className="stat-row">
-        <div className="card stat-card">
-          <strong>{keys.length}</strong>
-          <span>Total<br />Gateway APIs</span>
-        </div>
-        <div className="card stat-card">
-          <strong className="ok">{activeCount}</strong>
-          <span>Active<br />Keys</span>
-        </div>
+        <StatCard value={keys.length} label={<>{isAdmin ? 'Total' : 'Your'}<br />Gateway APIs</>} />
+        <StatCard value={activeCount} tone="ok" label={<>Active<br />Keys</>} />
+        {isAdmin && <StatCard value={keys.length - activeCount} label={<>Revoked<br />Keys</>} />}
         <button className="add-tile" onClick={() => setShowGenerate(true)} title="Generate gateway API" aria-label="Generate gateway API">
           <Plus size={28} />
         </button>
       </div>
 
       <div className="card table-card">
+        <div className="table-toolbar wrap">
+          <div className="search">
+            <Search size={16} />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by key or server name..." />
+          </div>
+          <div className="filters">
+            {isAdmin && (
+              <>
+                <select value={owner} onChange={(e) => setOwner(e.target.value)} aria-label="Owner">
+                  <option value="">All owners</option>
+                  {owners.map(([id, name]) => (
+                    <option key={id} value={id}>{id === user?.id ? `${name} (you)` : name}</option>
+                  ))}
+                </select>
+                <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status">
+                  <option value="">Active and revoked</option>
+                  <option value="active">Active</option>
+                  <option value="revoked">Revoked</option>
+                </select>
+              </>
+            )}
+            <span className="muted">{sorted.length} keys</span>
+          </div>
+        </div>
         <div className="table-scroll">
           <table className="table">
             <thead>
               <tr>
-                <th>ID</th>
-                <th>Name</th>
-                {isAdmin && <th>Owner</th>}
+                <SortHeader label="ID" field="id" sort={sort} onSort={toggle} />
+                <SortHeader label="Name" field="key_name" sort={sort} onSort={toggle} />
+                {isAdmin && <SortHeader label="Owner" field="user_name" sort={sort} onSort={toggle} />}
                 <th>Servers</th>
-                <th>Status</th>
-                <th>Created Date</th>
+                {isAdmin && <th>Status</th>}
+                <SortHeader label="Created Date" field="created_at" sort={sort} onSort={toggle} />
                 <th className="center">Action</th>
               </tr>
             </thead>
             <tbody>
-              {loading && keys.length === 0 ? (
-                <tr><td colSpan={colCount} className="empty">Loading...</td></tr>
-              ) : keys.length === 0 ? (
-                <tr>
-                  <td colSpan={colCount} className="empty">
-                    No gateway APIs yet. Use <strong>+</strong> to generate one.
-                  </td>
-                </tr>
-              ) : (
-                keys.map((k) => {
-                  const revoked = !!k.deleted_at;
-                  return (
-                    <tr key={k.id}>
-                      <td className="id-cell">{k.id}</td>
-                      <td><strong>{k.key_name}</strong></td>
-                      {isAdmin && <td>{ownerLabel(k)}</td>}
+              <TableState
+                loading={loading}
+                empty={sorted.length === 0}
+                cols={cols}
+                emptyText={keys.length ? 'No keys match your filters' : 'No gateway APIs yet. Use + to generate one.'}
+              />
+              {sorted.map((k) => {
+                const revoked = k.is_deleted;
+                return (
+                  <tr key={k.id} className={revoked ? 'is-dim' : ''}>
+                    <td className="id-cell">{k.id}</td>
+                    <td><strong>{k.key_name}</strong></td>
+                    {isAdmin && (
                       <td>
-                        <div className="tag-list">
-                          {k.all_servers ? (
-                            <span className="tag">All servers</span>
-                          ) : (
-                            k.server_ids.map((id) => {
-                              const state = serverState(id);
-                              const warn = state && state !== 'active';
-                              return (
-                                <span key={id} className={`tag ${warn ? 'tag-warn' : ''}`} title={warn ? `This server is ${state}` : `Server #${id}`}>
-                                  {serverLabel(id)}
-                                </span>
-                              );
-                            })
+                        {k.user_id === user?.id ? 'You' : k.user_name}
+                        {k.owner_type === 'user' && k.user_id !== user?.id && <small className="muted"> · user</small>}
+                      </td>
+                    )}
+                    <td><KeyServerTags apiKey={k} /></td>
+                    {isAdmin && (
+                      <td>
+                        <span className={`status-pill ${revoked ? 'deleted' : 'active'}`} title={revoked ? `Revoked ${formatDateTime(k.deleted_at)}` : ''}>
+                          {revoked ? 'Revoked' : 'Active'}
+                        </span>
+                      </td>
+                    )}
+                    <td className="nowrap">{formatDate(k.created_at)}</td>
+                    <td className="center nowrap">
+                      <button className="icon-btn" onClick={() => setViewing(k)} title="View client config">
+                        <FileCode size={17} />
+                      </button>
+                      {isAdmin && !revoked && (
+                        <>
+                          {!k.all_servers && (
+                            <button className="icon-btn" onClick={() => setEditingServers(k)} title="Edit servers">
+                              <Server size={17} />
+                            </button>
                           )}
-                        </div>
-                      </td>
-                      <td>
-                        <span className={`status-pill ${revoked ? 'deleted' : 'active'}`}>{revoked ? 'Revoked' : 'Active'}</span>
-                      </td>
-                      <td className="nowrap">{formatDate(k.created_at)}</td>
-                      <td className="center nowrap">
-                        <button className="icon-btn" onClick={() => setViewing(k)} title="View client config">
-                          <FileCode size={17} />
-                        </button>
-                        {isAdmin && !revoked && (
-                          <>
-                            {!k.all_servers && (
-                              <button className="icon-btn" onClick={() => setEditingServers(k)} title="Edit servers">
-                                <Server size={17} />
-                              </button>
-                            )}
-                            <button className="icon-btn" onClick={() => setPending({ key: k, action: 'rotate' })} title="Rotate key">
-                              <RotateCw size={17} />
-                            </button>
-                            <button className="icon-btn danger-hover" onClick={() => setPending({ key: k, action: 'revoke' })} title="Revoke key">
-                              <Trash2 size={17} />
-                            </button>
-                          </>
-                        )}
-                        {isAdmin && revoked && (
-                          <button className="icon-btn" onClick={() => setPending({ key: k, action: 'restore' })} title="Restore key">
-                            <RotateCcw size={17} />
+                          <button className="icon-btn" onClick={() => setPending({ key: k, action: 'rotate' })} title="Rotate key">
+                            <RotateCw size={17} />
                           </button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
+                          <button className="icon-btn danger-hover" onClick={() => setPending({ key: k, action: 'revoke' })} title="Revoke key">
+                            <Trash2 size={17} />
+                          </button>
+                        </>
+                      )}
+                      {isAdmin && revoked && (
+                        <button className="icon-btn" onClick={() => setPending({ key: k, action: 'restore' })} title="Restore key">
+                          <RotateCcw size={17} />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -216,26 +209,10 @@ export default function GatewayApis() {
 
       {showGenerate && (
         <GenerateApiModal
-          serverLabel={serverLabel}
           onClose={() => setShowGenerate(false)}
           onGenerated={(k) => {
             notify(`"${k.key_name}" generated.`);
-            load();
-          }}
-        />
-      )}
-
-      {showManage && (
-        <ManageKeyModal
-          serverLabel={serverLabel}
-          onClose={() => {
-            setShowManage(false);
-            load();
-          }}
-          onDone={(message) => {
-            setShowManage(false);
-            notify(message);
-            load();
+            reload();
           }}
         />
       )}
@@ -243,19 +220,18 @@ export default function GatewayApis() {
       {editingServers && (
         <KeyServersModal
           apiKey={editingServers}
-          servers={servers}
           onClose={() => setEditingServers(null)}
           onSaved={(k) => {
             notify(`Servers of "${k.key_name}" updated.`);
             setEditingServers(null);
-            load();
+            reload();
           }}
         />
       )}
 
       {viewing && (
         <Modal title={viewing.key_name} subtitle="Gateway API details" icon={<KeyRound size={20} />} onClose={() => setViewing(null)} width={600}>
-          <ApiDetails name={viewing.key_name} servers={viewing.all_servers ? null : viewing.server_ids.map(serverLabel)} />
+          <ApiDetails name={viewing.key_name} servers={serverNames(viewing)} />
           <div className="modal-actions">
             <button className="btn btn-primary" onClick={() => setViewing(null)}>Close</button>
           </div>
@@ -264,7 +240,7 @@ export default function GatewayApis() {
 
       {rotated && (
         <Modal title="Key rotated" subtitle={rotated.key_name} icon={<KeyRound size={20} />} onClose={() => setRotated(null)} width={600}>
-          <ApiDetails name={rotated.key_name} apiKey={rotated.api_key} servers={rotated.all_servers ? null : rotated.server_ids.map(serverLabel)} />
+          <ApiDetails name={rotated.key_name} apiKey={rotated.api_key} servers={rotated.names} />
           <div className="modal-actions">
             <button className="btn btn-primary" onClick={() => setRotated(null)}>Done</button>
           </div>
