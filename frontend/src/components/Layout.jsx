@@ -5,6 +5,8 @@ import {
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
+  BarChart3,
+  Wrench,
   KeyRound,
   LayoutGrid,
   LogOut,
@@ -27,6 +29,7 @@ const ADMIN_NAV = [
     section: 'Infrastructure',
     items: [
       { to: '/mcp-servers', label: 'MCP Servers', icon: Server },
+      { to: '/tools', label: 'Tools', icon: Wrench },
       { to: '/deleted-servers', label: 'Deleted Servers', icon: Trash2 },
     ],
   },
@@ -37,9 +40,19 @@ const ADMIN_NAV = [
       { to: '/gateway-apis', label: 'Gateway APIs', icon: KeyRound },
     ],
   },
+  { section: 'Monitoring', items: [{ to: '/usage', label: 'Tool Usage', icon: BarChart3 }] },
 ];
 
-const USER_NAV = [{ section: 'Access', items: [{ to: '/gateway-apis', label: 'My Gateway APIs', icon: KeyRound }] }];
+const USER_NAV = [
+  {
+    section: 'Access',
+    items: [
+      { to: '/gateway-apis', label: 'My Gateway APIs', icon: KeyRound },
+      { to: '/tools', label: 'Servers & Tools', icon: Wrench },
+    ],
+  },
+  { section: 'Monitoring', items: [{ to: '/usage', label: 'My Usage', icon: BarChart3 }] },
+];
 
 const HEALTH_TEXT = { checking: 'Checking', ok: 'Operational', down: 'Unreachable' };
 const HEALTH_POLL_MS = 60_000;

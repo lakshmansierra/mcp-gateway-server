@@ -1,25 +1,26 @@
 import { useMemo, useState } from 'react';
 import { Server } from 'lucide-react';
 import Modal from './Modal.jsx';
-import { parseIds, updateKeyServers } from '../services/mcpService.js';
+import { useLoader } from '../hooks/useLoader.js';
+import { listServers, updateKeyServers } from '../services/mcpService.js';
 
 /**
  * PATCH /api/admin/keys/{id}/servers with KeyServersUpdate { add, remove }.
- * Tick the servers the key should reach; the modal sends the difference from what it has now.
+ * Choices: your enabled, live servers (GET /api/admin/servers), plus whatever the key has now, so a deleted or
+ * disabled server can still be taken off it. Tick what the key should reach; only the difference is sent.
  */
-export default function KeyServersModal({ apiKey, servers, onClose, onSaved }) {
-  const current = apiKey.server_ids;
+export default function KeyServersModal({ apiKey, onClose, onSaved }) {
+  const current = useMemo(() => apiKey.servers.map((s) => s.id), [apiKey]);
+  const servers = useLoader(listServers, [], []);
   const [checked, setChecked] = useState(() => new Set(current));
-  const [extra, setExtra] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  // Servers the key has now, plus enabled live servers this browser knows about.
   const options = useMemo(() => {
-    const byId = new Map(servers.map((s) => [s.id, s]));
-    const ids = new Set([...current, ...servers.filter((s) => s.enabled && !s.deleted_at).map((s) => s.id)]);
-    return [...ids].sort((a, b) => a - b).map((id) => ({ id, server: byId.get(id) }));
-  }, [current, servers]);
+    const byId = new Map(apiKey.servers.map((s) => [s.id, s]));
+    for (const s of servers.data) if ((s.enabled && !s.is_deleted) || byId.has(s.id)) byId.set(s.id, s);
+    return [...byId.values()].sort((a, b) => a.server_name.localeCompare(b.server_name));
+  }, [apiKey, servers.data]);
 
   const flip = (id) =>
     setChecked((sel) => {
@@ -30,17 +31,9 @@ export default function KeyServersModal({ apiKey, servers, onClose, onSaved }) {
 
   const submit = async (e) => {
     e.preventDefault();
-    let extraIds;
-    try {
-      extraIds = parseIds(extra);
-    } catch (err) {
-      setError(err.message);
-      return;
-    }
-    const wanted = new Set([...checked, ...extraIds]);
-    const add = [...wanted].filter((id) => !current.includes(id));
-    const remove = current.filter((id) => !wanted.has(id));
-    if (wanted.size === 0) {
+    const add = [...checked].filter((id) => !current.includes(id));
+    const remove = current.filter((id) => !checked.has(id));
+    if (checked.size === 0) {
       setError('A key must keep at least one server. Revoke the key instead.');
       return;
     }
@@ -58,37 +51,32 @@ export default function KeyServersModal({ apiKey, servers, onClose, onSaved }) {
     }
   };
 
+  const note = (s) => (s.is_deleted ? ' · deleted' : !s.enabled ? ' · disabled' : '');
+
   return (
-    <Modal title="Edit Key Servers" subtitle={`${apiKey.key_name} (#${apiKey.id})`} icon={<Server size={20} />} onClose={onClose} width={560}>
+    <Modal title="Edit Key Servers" subtitle={`${apiKey.key_name} (#${apiKey.id}) · ${apiKey.user_name}`} icon={<Server size={20} />} onClose={onClose} width={560}>
       <form onSubmit={submit} className="form" noValidate>
         <div className="field">
           <span>Servers this key reaches</span>
-          {options.length === 0 ? (
-            <p className="field-hint">No servers known in this browser. Add server IDs below.</p>
+          {servers.error && <div className="alert-error">{servers.error}</div>}
+          {servers.loading && options.length === 0 ? (
+            <p className="field-hint">Loading servers...</p>
           ) : (
-            <ul className="selected-list">
-              {options.map(({ id, server }) => (
-                <li key={id}>
+            <ul className="selected-list server-pick">
+              {options.map((s) => (
+                <li key={s.id}>
                   <label className="checkbox">
-                    <input type="checkbox" checked={checked.has(id)} onChange={() => flip(id)} />
+                    <input type="checkbox" checked={checked.has(s.id)} onChange={() => flip(s.id)} />
                     <span>
-                      <strong>{server ? server.server_name : `Server #${id}`}</strong>{' '}
-                      <small className="muted">#{id}{server && !server.enabled ? ' · disabled' : ''}</small>
+                      <strong>{s.server_name}</strong> <small className="muted">#{s.id}{note(s)}</small>
                     </span>
                   </label>
                 </li>
               ))}
             </ul>
           )}
+          <small className="field-hint">Only enabled servers can be added. Deleted or disabled ones can only be removed.</small>
         </div>
-
-        <label className="field">
-          <span>
-            Other server IDs to add <small className="muted">(optional)</small>
-          </span>
-          <input value={extra} onChange={(e) => setExtra(e.target.value)} placeholder="e.g. 12, 15" />
-          <small className="field-hint">Servers must be enabled and registered by the admin who created the key's user.</small>
-        </label>
 
         {error && <div className="alert-error">{error}</div>}
 

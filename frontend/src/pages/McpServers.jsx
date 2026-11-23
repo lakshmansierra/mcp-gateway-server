@@ -1,36 +1,30 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Pencil, Plus, RefreshCw, Search, Server, Trash2 } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Pencil, Plus, Search, Server, Trash2, Wrench } from 'lucide-react';
 import AddServerModal from '../components/AddServerModal.jsx';
+import { LoadError, PageHeader, StatCard, TableState } from '../components/Common.jsx';
 import { ConfirmDialog } from '../components/Modal.jsx';
 import SortHeader, { useSort } from '../components/SortHeader.jsx';
 import { useToast } from '../components/Toast.jsx';
+import { useLoader } from '../hooks/useLoader.js';
 import { deleteServer, formatDate, listServers, TRANSPORTS, updateServer } from '../services/mcpService.js';
 
+/** GET /api/admin/servers (live ones; deleted ones are on Deleted Servers) with edit, enable/disable and delete. */
 export default function McpServers() {
   const notify = useToast();
-  const [servers, setServers] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
+  const { data, error, loading, reload } = useLoader(listServers, [], []);
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState(null); // null | 'new' | server
   const [toDelete, setToDelete] = useState(null);
   const [busy, setBusy] = useState(false);
   const [toggling, setToggling] = useState(() => new Set());
 
-  const load = useCallback(() => {
-    setLoading(true);
-    setServers(listServers());
-    setLoading(false);
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
+  const servers = useMemo(() => data.filter((s) => !s.is_deleted), [data]);
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return q ? servers.filter((s) => s.server_name.toLowerCase().includes(q) || s.server_url.toLowerCase().includes(q)) : servers;
   }, [servers, query]);
-
   const { sorted, sort, toggle } = useSort(filtered, 'created_at', 'desc');
 
   const confirmDelete = async () => {
@@ -43,14 +37,13 @@ export default function McpServers() {
       notify(err.message, 'error');
     } finally {
       setBusy(false);
-      load();
+      reload();
     }
   };
 
   const toggleEnabled = async (s) => {
     const enabled = !s.enabled;
     setToggling((t) => new Set(t).add(s.id));
-    setServers((list) => list.map((x) => (x.id === s.id ? { ...x, enabled } : x)));
     try {
       await updateServer(s.id, { enabled });
       notify(`"${s.server_name}" ${enabled ? 'enabled' : 'disabled'}.`);
@@ -62,39 +55,23 @@ export default function McpServers() {
         next.delete(s.id);
         return next;
       });
-      load();
+      reload();
     }
   };
 
   const activeCount = servers.filter((s) => s.enabled).length;
-  const colCount = 8;
+  const toolCount = servers.reduce((n, s) => n + s.tool_count, 0);
+  const cols = 9;
 
   return (
     <div className="page">
-      <div className="page-header">
-        <div className="page-title">
-          <div className="icon-tile">
-            <Server size={20} />
-          </div>
-          <div>
-            <h1>MCP Servers</h1>
-            <p className="muted">Servers you registered or changed from this browser</p>
-          </div>
-        </div>
-        <button className="btn btn-outline" onClick={load}>
-          <RefreshCw size={16} className={loading ? 'spin' : ''} /> Refresh
-        </button>
-      </div>
+      <PageHeader icon={Server} title="MCP Servers" subtitle="Servers you registered with the gateway" loading={loading} onRefresh={reload} />
+      <LoadError error={error} onRetry={reload} />
 
       <div className="stat-row">
-        <div className="card stat-card">
-          <strong>{servers.length}</strong>
-          <span>Total<br />Registered Servers</span>
-        </div>
-        <div className="card stat-card">
-          <strong className="ok">{activeCount}</strong>
-          <span>Active<br />Servers</span>
-        </div>
+        <StatCard value={servers.length} label={<>Registered<br />Servers</>} />
+        <StatCard value={activeCount} tone="ok" label={<>Active<br />Servers</>} />
+        <StatCard value={toolCount} label={<>Tools<br />Listed</>} />
         <button className="add-tile" onClick={() => setEditing('new')} title="Add MCP server" aria-label="Add MCP server">
           <Plus size={28} />
         </button>
@@ -117,6 +94,7 @@ export default function McpServers() {
                 <SortHeader label="Server Name" field="server_name" sort={sort} onSort={toggle} />
                 <th>Endpoint</th>
                 <th>Transport</th>
+                <SortHeader label="Tools" field="tool_count" sort={sort} onSort={toggle} />
                 <SortHeader label="Timeout" field="timeout_seconds" sort={sort} onSort={toggle} />
                 <th>Status</th>
                 <SortHeader label="Created Date" field="created_at" sort={sort} onSort={toggle} />
@@ -124,48 +102,53 @@ export default function McpServers() {
               </tr>
             </thead>
             <tbody>
-              {loading && servers.length === 0 ? (
-                <tr><td colSpan={colCount} className="empty">Loading...</td></tr>
-              ) : sorted.length === 0 ? (
-                <tr><td colSpan={colCount} className="empty">{query ? 'No servers match your search' : 'No MCP servers registered from this browser yet'}</td></tr>
-              ) : (
-                sorted.map((s) => {
-                  const status = s.enabled ? 'active' : 'inactive';
-                  return (
-                    <tr key={s.id}>
-                      <td className="id-cell">{s.id}</td>
-                      <td>
-                        <div className="name-cell">
-                          <strong>{s.server_name}</strong>
-                          <small className="muted">Tools: {s.server_name}__*</small>
-                        </div>
-                      </td>
-                      <td><code className="url">{s.server_url}</code></td>
-                      <td><span className="tag">{TRANSPORTS[s.transport] || s.transport}</span></td>
-                      <td className="nowrap">{s.timeout_seconds}s</td>
-                      <td>
-                        <button
-                          className={`status-pill ${status}`}
-                          onClick={() => toggleEnabled(s)}
-                          disabled={toggling.has(s.id)}
-                          title={s.enabled ? 'Click to disable' : 'Click to enable'}
-                        >
-                          {s.enabled ? 'Active' : 'Inactive'}
-                        </button>
-                      </td>
-                      <td className="nowrap">{formatDate(s.created_at)}</td>
-                      <td className="center nowrap">
-                        <button className="icon-btn" onClick={() => setEditing(s)} title="Edit server">
-                          <Pencil size={17} />
-                        </button>
-                        <button className="icon-btn danger-hover" onClick={() => setToDelete(s)} title="Remove server">
-                          <Trash2 size={17} />
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
+              <TableState
+                loading={loading}
+                empty={sorted.length === 0}
+                cols={cols}
+                emptyText={query ? 'No servers match your search' : 'No MCP servers registered yet'}
+              />
+              {sorted.map((s) => (
+                <tr key={s.id}>
+                  <td className="id-cell">{s.id}</td>
+                  <td>
+                    <div className="name-cell row-link" onClick={() => navigate(`/mcp-servers/${s.id}`)}>
+                      <strong>{s.server_name}</strong>
+                      <small className="muted">Tools: {s.server_name}__*</small>
+                    </div>
+                  </td>
+                  <td><code className="url">{s.server_url}</code></td>
+                  <td><span className="tag">{TRANSPORTS[s.transport] || s.transport}</span></td>
+                  <td className="nowrap">
+                    <button className="btn-text" onClick={() => navigate(`/mcp-servers/${s.id}`)} title="View tools">
+                      {s.tool_count}
+                    </button>
+                  </td>
+                  <td className="nowrap">{s.timeout_seconds}s</td>
+                  <td>
+                    <button
+                      className={`status-pill ${s.enabled ? 'active' : 'inactive'}`}
+                      onClick={() => toggleEnabled(s)}
+                      disabled={toggling.has(s.id)}
+                      title={s.enabled ? 'Click to disable' : 'Click to enable'}
+                    >
+                      {s.enabled ? 'Active' : 'Inactive'}
+                    </button>
+                  </td>
+                  <td className="nowrap">{formatDate(s.created_at)}</td>
+                  <td className="center nowrap">
+                    <button className="icon-btn" onClick={() => navigate(`/mcp-servers/${s.id}`)} title="Tools and details">
+                      <Wrench size={17} />
+                    </button>
+                    <button className="icon-btn" onClick={() => setEditing(s)} title="Edit server">
+                      <Pencil size={17} />
+                    </button>
+                    <button className="icon-btn danger-hover" onClick={() => setToDelete(s)} title="Remove server">
+                      <Trash2 size={17} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
@@ -178,7 +161,7 @@ export default function McpServers() {
           onSaved={(s) => {
             notify(editing === 'new' ? `"${s.server_name}" registered with the gateway.` : `"${s.server_name}" updated.`);
             setEditing(null);
-            load();
+            reload();
           }}
         />
       )}

@@ -1,30 +1,23 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { KeyRound, Plus, RefreshCw, RotateCcw, Search, Trash2, Users as UsersIcon } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Eye, KeyRound, Plus, RotateCcw, Search, Trash2, Users as UsersIcon } from 'lucide-react';
+import { LoadError, PageHeader, StatCard, TableState } from '../components/Common.jsx';
 import { ConfirmDialog } from '../components/Modal.jsx';
+import UserDetailModal from '../components/UserDetailModal.jsx';
 import SortHeader, { useSort } from '../components/SortHeader.jsx';
 import { useToast } from '../components/Toast.jsx';
 import { CreateUserModal, ResetPasswordModal } from '../components/UserModals.jsx';
-import { deleteUser, formatDate, listUsers, restoreUser } from '../services/mcpService.js';
+import { useLoader } from '../hooks/useLoader.js';
+import { deleteUser, formatDate, formatDateTime, listUsers, restoreUser } from '../services/mcpService.js';
 
 export default function Users() {
   const notify = useToast();
-  const [users, setUsers] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const { data: users, error, loading, reload: load } = useLoader(listUsers, [], []);
   const [query, setQuery] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [resetting, setResetting] = useState(null);
   const [pending, setPending] = useState(null); // { user, action: 'delete' | 'restore' }
   const [busy, setBusy] = useState(false);
-
-  const load = useCallback(() => {
-    setLoading(true);
-    setUsers(listUsers());
-    setLoading(false);
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  const [viewing, setViewing] = useState(null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -43,7 +36,7 @@ export default function Users() {
         notify(`"${user.user_name}" deleted. ${n} API key${n === 1 ? '' : 's'} revoked.`);
       } else {
         await restoreUser(user.id);
-        notify(`"${user.user_name}" restored. Their API keys stay revoked until you restore them.`);
+        notify(`"${user.user_name}" restored. Their API keys stay revoked until you restore them on Gateway APIs.`);
       }
       setPending(null);
     } catch (err) {
@@ -54,34 +47,17 @@ export default function Users() {
     }
   };
 
-  const activeCount = users.filter((u) => !u.deleted_at).length;
+  const activeCount = users.filter((u) => !u.is_deleted).length;
 
   return (
     <div className="page">
-      <div className="page-header">
-        <div className="page-title">
-          <div className="icon-tile">
-            <UsersIcon size={20} />
-          </div>
-          <div>
-            <h1>Users</h1>
-            <p className="muted">User accounts you created or changed from this browser</p>
-          </div>
-        </div>
-        <button className="btn btn-outline" onClick={load}>
-          <RefreshCw size={16} className={loading ? 'spin' : ''} /> Refresh
-        </button>
-      </div>
+      <PageHeader icon={UsersIcon} title="Users" subtitle="User accounts you created. Deleted users stay listed so you can restore them." loading={loading} onRefresh={load} />
+      <LoadError error={error} onRetry={load} />
 
       <div className="stat-row">
-        <div className="card stat-card">
-          <strong>{users.length}</strong>
-          <span>Total<br />Users</span>
-        </div>
-        <div className="card stat-card">
-          <strong className="ok">{activeCount}</strong>
-          <span>Active<br />Users</span>
-        </div>
+        <StatCard value={users.length} label={<>Total<br />Users</>} />
+        <StatCard value={activeCount} tone="ok" label={<>Active<br />Users</>} />
+        <StatCard value={users.length - activeCount} label={<>Deleted<br />Users</>} />
         <button className="add-tile" onClick={() => setShowCreate(true)} title="Create user" aria-label="Create user">
           <Plus size={28} />
         </button>
@@ -103,27 +79,32 @@ export default function Users() {
                 <SortHeader label="ID" field="id" sort={sort} onSort={toggle} />
                 <SortHeader label="Username" field="user_name" sort={sort} onSort={toggle} />
                 <th>Status</th>
+                <SortHeader label="Keys" field="key_count" sort={sort} onSort={toggle} />
                 <SortHeader label="Created Date" field="created_at" sort={sort} onSort={toggle} />
                 <th className="center">Action</th>
               </tr>
             </thead>
             <tbody>
-              {loading && users.length === 0 ? (
-                <tr><td colSpan={5} className="empty">Loading...</td></tr>
-              ) : sorted.length === 0 ? (
-                <tr><td colSpan={5} className="empty">{query ? 'No users match your search' : 'No users created from this browser yet'}</td></tr>
-              ) : (
-                sorted.map((u) => {
-                  const deleted = !!u.deleted_at;
+              <TableState loading={loading} empty={sorted.length === 0} cols={6} emptyText={query ? 'No users match your search' : 'No users yet. Use + to create one.'} />
+              {sorted.map((u) => {
+                  const deleted = u.is_deleted;
                   return (
                     <tr key={u.id}>
                       <td className="id-cell">{u.id}</td>
-                      <td><strong>{u.user_name}</strong></td>
                       <td>
-                        <span className={`status-pill ${deleted ? 'deleted' : 'active'}`}>{deleted ? 'Deleted' : 'Active'}</span>
+                        <button className="btn-text" onClick={() => setViewing(u.id)}><strong>{u.user_name}</strong></button>
                       </td>
+                      <td>
+                        <span className={`status-pill ${deleted ? 'deleted' : 'active'}`} title={deleted ? `Deleted ${formatDateTime(u.deleted_at)}` : ''}>
+                          {deleted ? 'Deleted' : 'Active'}
+                        </span>
+                      </td>
+                      <td className="num">{u.key_count}</td>
                       <td className="nowrap">{formatDate(u.created_at)}</td>
                       <td className="center nowrap">
+                        <button className="icon-btn" onClick={() => setViewing(u.id)} title="Details and keys">
+                          <Eye size={17} />
+                        </button>
                         {deleted ? (
                           <button className="icon-btn" onClick={() => setPending({ user: u, action: 'restore' })} title="Restore user">
                             <RotateCcw size={17} />
@@ -141,8 +122,7 @@ export default function Users() {
                       </td>
                     </tr>
                   );
-                })
-              )}
+                })}
             </tbody>
           </table>
         </div>
@@ -170,6 +150,8 @@ export default function Users() {
           }}
         />
       )}
+
+      {viewing && <UserDetailModal userId={viewing} onClose={() => setViewing(null)} />}
 
       {pending && (
         <ConfirmDialog

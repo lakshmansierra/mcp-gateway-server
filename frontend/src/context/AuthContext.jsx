@@ -48,6 +48,17 @@ export function AuthProvider({ children }) {
     unauthorized: (message) => sessionRef.current && endSession(message),
   });
 
+  // On page load, refresh the stored account from GET /api/me (a 401 there ends the session via the API client).
+  useEffect(() => {
+    if (!sessionRef.current) return;
+    svc
+      .getMe()
+      .then((user) => sessionRef.current && persist({ ...sessionRef.current, user }))
+      .catch(() => {
+        /* offline or 401: the API client already handled it */
+      });
+  }, [persist]);
+
   // End the session when the token expires.
   useEffect(() => {
     if (!session) return undefined;
