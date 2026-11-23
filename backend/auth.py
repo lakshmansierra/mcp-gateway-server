@@ -89,3 +89,10 @@ def current_admin(user: UserOut = Depends(current_user)) -> UserOut:
     if user.type != "admin":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Admins only")
     return user
+
+
+def current_plain_user(user: UserOut = Depends(current_user)) -> UserOut:
+    """Logged-in user accounts only (admins have their own routes under /api/admin)."""
+    if user.type != "user":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Users only; admins use the /api/admin routes")
+    return user

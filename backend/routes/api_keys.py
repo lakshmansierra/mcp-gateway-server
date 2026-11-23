@@ -3,21 +3,26 @@
 POST   /api/keys                          create a key (any logged-in admin or user). Admin keys reach every
                                           server (all_servers = 1); user keys only the servers in server_ids
                                           (all_servers = 0). The plain key is returned once.
+GET    /api/admin/keys                    your keys and your users' keys, deleted ones included (tagged
+                                          is_deleted); ?user_id= for one owner
+GET    /api/admin/keys/{key_id}           one of them
 DELETE /api/admin/keys/{key_id}           soft-delete a key (logged-in admin only)
 POST   /api/admin/keys/{key_id}/restore   undo a key's soft delete (logged-in admin only)
 PATCH  /api/admin/keys/{key_id}/servers   add / remove servers on a key (logged-in admin only)
 POST   /api/admin/keys/{key_id}/rotate    new value for a key, same name and servers (logged-in admin only)
-                                          All four: only keys you created, or that users you created created.
+                                          All admin routes: only keys you created, or that users you created
+                                          created; any other id answers 404.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Path, status
+from fastapi import APIRouter, Depends, Path, Query, status
 from hdbcli import dbapi
 
 from backend.auth import current_admin, current_user
 from backend.db import get_db
-from backend.models import KeyCreate, KeyCreatedOut, KeyDeletedOut, KeyOut, KeyServersUpdate, UserOut
+from backend.models import KeyCreate, KeyCreatedOut, KeyDeletedOut, KeyListOut, KeyOut, KeyServersUpdate, UserOut
+from backend.services import admin_views
 from backend.services import api_keys as key_service
 
 router = APIRouter(prefix="/api/keys", tags=["api keys"])
@@ -31,6 +36,24 @@ def create_key(
     conn: dbapi.Connection = Depends(get_db),
 ) -> KeyCreatedOut:
     return key_service.create_key(conn, body, user)
+
+
+@admin_router.get("", response_model=list[KeyListOut])
+def list_keys(
+    user_id: int | None = Query(None, gt=0, description="Only this owner's keys (you, or a user you created)"),
+    admin: UserOut = Depends(current_admin),
+    conn: dbapi.Connection = Depends(get_db),
+) -> list[KeyListOut]:
+    return admin_views.list_keys(conn, admin, user_id)
+
+
+@admin_router.get("/{key_id}", response_model=KeyListOut)
+def get_key(
+    key_id: int = Path(gt=0),
+    admin: UserOut = Depends(current_admin),
+    conn: dbapi.Connection = Depends(get_db),
+) -> KeyListOut:
+    return admin_views.get_key(conn, key_id, admin)
 
 
 @admin_router.delete("/{key_id}", response_model=KeyDeletedOut)

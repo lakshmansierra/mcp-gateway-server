@@ -8,6 +8,7 @@ from typing import NamedTuple
 from hdbcli import dbapi
 
 from backend.config import get_settings
+from backend.db import users
 
 _COLUMNS = (
     '"id", "user_id", "server_name", "server_url", "transport", "timeout_seconds", '
@@ -31,6 +32,59 @@ class ServerRow(NamedTuple):
 def _table() -> str:
     s = get_settings()
     return s.table(s.server_table)
+
+
+def table() -> str:
+    return _table()
+
+
+class ServerListRow(NamedTuple):
+    server: ServerRow
+    is_deleted: int
+    deleted_by: int | None
+    deleted_at: datetime | None
+    tool_count: int  # tools the server lists now (as the gateway last saw them)
+
+
+def _managed_sql(where: str) -> str:
+    """Servers added by the admin or by users the admin created (parameters: admin id, admin id, then `where`'s)."""
+    s = get_settings()
+    columns = ", ".join(f"s.{c.strip()}" for c in _COLUMNS.split(","))
+    return (
+        f'SELECT {columns}, s."is_deleted", s."deleted_by", s."deleted_at", '
+        f'(SELECT COUNT(*) FROM {s.table(s.tool_table)} t WHERE t."mcp_id" = s."id" AND t."removed_at" IS NULL) '
+        f'FROM {_table()} s WHERE s."user_id" IN ({users.managed_ids_sql()}) AND {where}'
+    )
+
+
+def _list_row(row: tuple) -> ServerListRow:
+    return ServerListRow(ServerRow(*row[:10]), *row[10:])
+
+
+def list_managed(cur: dbapi.Cursor, admin_id: int) -> list[ServerListRow]:
+    """Every server this admin manages, deleted and disabled ones included, newest first."""
+    cur.execute(_managed_sql("1 = 1") + ' ORDER BY s."id" DESC', (admin_id, admin_id))
+    return [_list_row(row) for row in cur.fetchall()]
+
+
+def get_managed(cur: dbapi.Cursor, server_id: int, admin_id: int) -> ServerListRow | None:
+    """This server if the admin manages it, deleted or not; else None."""
+    cur.execute(_managed_sql('s."id" = ?'), (admin_id, admin_id, server_id))
+    row = cur.fetchone()
+    return None if row is None else _list_row(row)
+
+
+def list_usable(cur: dbapi.Cursor, admin_id: int | None) -> list[ServerRow]:
+    """The servers a user may use: added by their admin (admin_id), enabled and not deleted, by name.
+    No admin (None) means none."""
+    if admin_id is None:
+        return []
+    cur.execute(
+        f'SELECT {_COLUMNS} FROM {_table()} WHERE "user_id" = ? AND "enabled" = 1 AND "is_deleted" = 0 '
+        f'ORDER BY "server_name"',
+        (admin_id,),
+    )
+    return [ServerRow(*row) for row in cur.fetchall()]
 
 
 def get_by_id(cur: dbapi.Cursor, server_id: int) -> tuple[ServerRow, bool] | None:

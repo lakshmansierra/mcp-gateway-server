@@ -67,6 +67,31 @@ class KeyOut(BaseModel):
     created_at: datetime
 
 
+class KeyServerOut(BaseModel):
+    """A server mapped to a key. Deleted and disabled servers are listed too, tagged."""
+
+    id: int
+    server_name: str
+    enabled: bool
+    is_deleted: bool
+
+
+class KeyListOut(BaseModel):
+    """A key in the admin's lists (never the key or its hash): deleted keys are included and tagged with is_deleted."""
+
+    id: int
+    user_id: int  # the key's owner
+    user_name: str
+    owner_type: str  # admin / user
+    key_name: str
+    all_servers: bool  # admin key: reaches every server its admin added
+    servers: list[KeyServerOut]  # user keys: the mapped servers; empty for admin keys
+    created_at: datetime
+    is_deleted: bool
+    deleted_by: int | None
+    deleted_at: datetime | None
+
+
 class KeyDeletedOut(BaseModel):
     """Result of DELETE /api/admin/keys/{key_id}."""
 

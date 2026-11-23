@@ -20,7 +20,7 @@ from hdbcli import dbapi
 from backend.config import get_settings
 from backend.db import get_db
 from backend.gateway_notify import notify_gateway_on_change
-from backend.routes import admin, api_keys, me, servers, user
+from backend.routes import admin, api_keys, me, servers, tools, usage, user
 
 app = FastAPI(title="MCP Gateway Backend", version="0.1.0")
 
@@ -41,6 +41,8 @@ app.include_router(me.router)
 app.include_router(servers.router)
 app.include_router(api_keys.router)
 app.include_router(api_keys.admin_router)
+app.include_router(tools.router)
+app.include_router(usage.router)
 
 
 @app.get("/api/health", tags=["health"])

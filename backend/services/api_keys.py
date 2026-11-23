@@ -37,7 +37,7 @@ def update_key_servers(conn: dbapi.Connection, key_id: int, body: KeyServersUpda
         if found is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"API key {key_id} not found")
         row, is_deleted = found
-        require_admin_manages(cur, row.user_id, admin, "API keys")
+        require_admin_manages(cur, row.user_id, admin, f"API key {key_id} not found")
         if is_deleted:
             raise HTTPException(status.HTTP_409_CONFLICT, f"API key '{row.key_name}' is deleted and can't be changed")
         if row.all_servers:
@@ -88,7 +88,7 @@ def delete_key(conn: dbapi.Connection, key_id: int, admin: UserOut) -> KeyDelete
         if found is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"API key {key_id} not found")
         row, is_deleted = found
-        require_admin_manages(cur, row.user_id, admin, "API keys")
+        require_admin_manages(cur, row.user_id, admin, f"API key {key_id} not found")
         if is_deleted:
             raise HTTPException(status.HTTP_409_CONFLICT, f"API key '{row.key_name}' is already deleted")
         deleted_at = api_keys.soft_delete(cur, key_id, admin.id)
@@ -120,7 +120,7 @@ def restore_key(conn: dbapi.Connection, key_id: int, admin: UserOut) -> KeyOut:
         if found is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"API key {key_id} not found")
         row, is_deleted = found
-        require_admin_manages(cur, row.user_id, admin, "API keys")
+        require_admin_manages(cur, row.user_id, admin, f"API key {key_id} not found")
         if not is_deleted:
             raise HTTPException(status.HTTP_409_CONFLICT, f"API key '{row.key_name}' is not deleted")
         owner = users.get_by_id(cur, row.user_id)
@@ -156,7 +156,7 @@ def rotate_key(conn: dbapi.Connection, key_id: int, admin: UserOut) -> KeyCreate
         if found is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"API key {key_id} not found")
         row, is_deleted = found
-        require_admin_manages(cur, row.user_id, admin, "API keys")
+        require_admin_manages(cur, row.user_id, admin, f"API key {key_id} not found")
         if is_deleted:
             raise HTTPException(status.HTTP_409_CONFLICT, f"API key '{row.key_name}' is deleted; restore it first")
 

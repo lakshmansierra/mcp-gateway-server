@@ -30,6 +30,14 @@ def _identifier(name: str) -> str:
     return value
 
 
+def _identifier_or(name: str, default: str) -> str:
+    """Like _identifier, but the setting may be left out (then `default` is used)."""
+    value = os.getenv(name, "").strip() or default
+    if not _IDENTIFIER.fullmatch(value):
+        raise RuntimeError(f"{name} may only contain letters, digits and '_'")
+    return value
+
+
 def _jwt_secret() -> str:
     value = _required("JWT_SECRET")
     if len(value) < 32:
@@ -56,6 +64,10 @@ class Settings:
     api_key_table: str
     api_key_mapping_table: str
     revoked_token_table: str
+    # Written by the gateway (tool lists, their history, every tool call); the backend only reads them.
+    tool_table: str
+    tool_change_table: str
+    tool_call_table: str
     cors_origins: list[str]
     jwt_secret: str
     jwt_expire_minutes: int
@@ -86,6 +98,9 @@ def get_settings() -> Settings:
         api_key_table=_identifier("MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE"),
         api_key_mapping_table=_identifier("MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE"),
         revoked_token_table=_identifier("REVOKED_TOKEN_TABLE"),
+        tool_table=_identifier_or("MCP_TOOL_TABLE", "tools_mgs"),
+        tool_change_table=_identifier_or("MCP_TOOL_CHANGE_TABLE", "tool_changes_mgs"),
+        tool_call_table=_identifier_or("MCP_TOOL_CALL_TABLE", "tool_calls_mgs"),
         cors_origins=[o.strip() for o in origins.split(",") if o.strip()],
         jwt_secret=_jwt_secret(),
         jwt_expire_minutes=int(os.getenv("JWT_EXPIRE_MINUTES", "480")),

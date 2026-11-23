@@ -3,6 +3,9 @@
 POST /api/admin/register  creates an account with type 'admin'. Called from Postman (the UI has no admin
                           sign-up) with `Authorization: Bearer <ADMIN_REGISTER_KEY from .env>`.
 POST /api/admin/login     checks the password and returns a login token (admins only)
+GET  /api/admin/users      the users you created, deleted ones included (tagged is_deleted)
+GET  /api/admin/users/{user_id}
+                          one of them (or yourself) with all their API keys; any other id answers 404
 POST /api/admin/users     creates a user account (logged-in admin only; users can't sign up themselves).
                           The user is saved with created_by = this admin.
 DELETE /api/admin/users/{user_id}
@@ -20,8 +23,17 @@ from hdbcli import dbapi
 
 from backend.auth import current_admin, require_admin_register_key
 from backend.db import get_db
-from backend.models import LoginRequest, PasswordReset, RegisterRequest, TokenOut, UserDeletedOut, UserOut
-from backend.services import accounts
+from backend.models import (
+    LoginRequest,
+    PasswordReset,
+    RegisterRequest,
+    TokenOut,
+    UserDeletedOut,
+    UserDetailOut,
+    UserListOut,
+    UserOut,
+)
+from backend.services import accounts, admin_views
 from backend.services import users as user_service
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -40,6 +52,20 @@ def register_admin(body: RegisterRequest, conn: dbapi.Connection = Depends(get_d
 @router.post("/login", response_model=TokenOut)
 def login_admin(body: LoginRequest, conn: dbapi.Connection = Depends(get_db)) -> TokenOut:
     return accounts.login(conn, body, "admin")
+
+
+@router.get("/users", response_model=list[UserListOut])
+def list_users(admin: UserOut = Depends(current_admin), conn: dbapi.Connection = Depends(get_db)) -> list[UserListOut]:
+    return admin_views.list_users(conn, admin)
+
+
+@router.get("/users/{user_id}", response_model=UserDetailOut)
+def get_user(
+    user_id: int = Path(gt=0),
+    admin: UserOut = Depends(current_admin),
+    conn: dbapi.Connection = Depends(get_db),
+) -> UserDetailOut:
+    return admin_views.get_user(conn, user_id, admin)
 
 
 @router.post("/users", response_model=UserOut, status_code=status.HTTP_201_CREATED)

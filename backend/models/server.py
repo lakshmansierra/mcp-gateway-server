@@ -144,6 +144,15 @@ class ServerOut(BaseModel):
     created_at: datetime
 
 
+class ServerListOut(ServerOut):
+    """A server in the admin's lists: deleted servers are included and tagged with is_deleted."""
+
+    is_deleted: bool
+    deleted_by: int | None
+    deleted_at: datetime | None
+    tool_count: int = Field(description="Tools the server lists now, as the gateway last saw them (hidden ones too)")
+
+
 class ServerDeletedOut(BaseModel):
     """Result of DELETE /api/admin/servers/{server_id}."""
 
