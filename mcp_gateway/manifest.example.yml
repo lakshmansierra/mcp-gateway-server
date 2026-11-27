@@ -54,6 +54,8 @@ applications:
       MCP_SERVER_TABLE: "mcp_app_mgs"
       MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE: "client_to_gateway_mcp_api_key_mgs"
       MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE: "client_to_gateway_mcp_api_key_mapping_mgs"
+      MCP_SERVER_AUTH_TABLE: "mcp_server_auth_mgs"
       MCP_TOOL_TABLE: "tools_mgs"
       MCP_TOOL_CHANGE_TABLE: "tool_changes_mgs"
       MCP_TOOL_CALL_TABLE: "tool_calls_mgs"
+      MCP_SERVER_TOKEN_CACHE_TABLE: "mcp_server_token_cache_mgs"
