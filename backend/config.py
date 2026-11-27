@@ -63,6 +63,8 @@ class Settings:
     server_table: str
     api_key_table: str
     api_key_mapping_table: str
+    # Per-server upstream auth config (bearer/basic/oauth2). The backend writes it; the gateway reads it.
+    server_auth_table: str
     revoked_token_table: str
     # Written by the gateway (tool lists, their history, every tool call); the backend only reads them.
     tool_table: str
@@ -97,6 +99,7 @@ def get_settings() -> Settings:
         server_table=_identifier("MCP_SERVER_TABLE"),
         api_key_table=_identifier("MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE"),
         api_key_mapping_table=_identifier("MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE"),
+        server_auth_table=_identifier_or("MCP_SERVER_AUTH_TABLE", "mcp_server_auth_mgs"),
         revoked_token_table=_identifier("REVOKED_TOKEN_TABLE"),
         tool_table=_identifier_or("MCP_TOOL_TABLE", "tools_mgs"),
         tool_change_table=_identifier_or("MCP_TOOL_CHANGE_TABLE", "tool_changes_mgs"),

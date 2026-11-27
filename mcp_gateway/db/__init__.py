@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from mcp_gateway.config.settings import ApiKeyConfig, DatabaseSettings, UpstreamConfig
 from mcp_gateway.db.api_keys import load_api_keys
 from mcp_gateway.db.connection import connect
+from mcp_gateway.db.server_auth import load_server_auth
 from mcp_gateway.db.servers import load_servers
 
 
@@ -25,7 +26,8 @@ def load_registry(db: DatabaseSettings) -> Registry:
     try:
         cur = conn.cursor()
         try:
-            return Registry(servers=load_servers(cur, db), api_keys=load_api_keys(cur, db))
+            auth_by_id = load_server_auth(cur, db)
+            return Registry(servers=load_servers(cur, db, auth_by_id), api_keys=load_api_keys(cur, db))
         finally:
             cur.close()
     finally:

@@ -43,6 +43,7 @@ from mcp.shared.exceptions import MCPError
 from mcp.shared.subscriptions import PromptsListChanged, ResourcesListChanged, ServerEvent, ToolsListChanged
 
 from mcp_gateway.config.settings import GatewaySettings, UpstreamConfig
+from mcp_gateway.upstream.oauth import TokenStore
 
 logger = logging.getLogger(__name__)
 
@@ -108,9 +109,11 @@ class Upstream:
         settings: GatewaySettings,
         on_change: OnChange | None = None,
         on_tools: OnTools | None = None,
+        token_store: TokenStore | None = None,
     ) -> None:
         self.config = config
         self.settings = settings
+        self._token_store = token_store  # shared OAuth2 token cache; None if the gateway has no DB-backed store
         self.client: Client | None = None
         self.catalog = Catalog()
         self.last_error: str | None = None
@@ -131,18 +134,58 @@ class Upstream:
     def connected(self) -> bool:
         return self.client is not None
 
-    def _transport(self, stack: AsyncExitStack, caller: str | None = None) -> Any:
+    def _is_oauth(self) -> bool:
+        return self.config.auth is not None and self.config.auth.auth_type == "oauth2"
+
+    async def _authorization(self, force: bool = False) -> dict[str, str] | None:
+        """The Authorization header to send to this upstream, or None for no auth. Bearer/basic are built from
+        stored secrets; oauth2 fetches (or reuses a cached) access token. force=True refetches an oauth2 token
+        (used on reconnect after the server rejected the last one). Any failure logs and returns None so the
+        connection is still attempted (the upstream then answers 401, surfaced as last_error)."""
+        auth = self.config.auth
+        if auth is None:
+            return None
+        if auth.auth_type in ("bearer", "basic"):
+            return auth.static_header()
+        if auth.auth_type == "oauth2":
+            if self._token_store is None or self.config.id is None:
+                logger.warning(
+                    "Upstream '%s' uses OAuth2 but no token store is available; connecting without a token", self.name
+                )
+                return None
+            try:
+                token = await self._token_store.token(auth, self.config.id, self.config.timeout_seconds, force=force)
+            except Exception as exc:  # noqa: BLE001 - token endpoint down or misconfigured
+                logger.warning(
+                    "Could not obtain an OAuth2 token for '%s' (auth may be misconfigured or the token endpoint "
+                    "is unreachable): %s",
+                    self.name,
+                    exc,
+                )
+                return None
+            prefix = (auth.header_prefix or "Bearer").strip()
+            return {"Authorization": f"{prefix} {token}".strip()}
+        return None
+
+    def _transport(self, stack: AsyncExitStack, caller: str | None = None, auth_header: dict[str, str] | None = None) -> Any:
         cfg = self.config
-        headers = {self.settings.client_id_header: caller} if caller else None  # names the client this session calls for
+        headers: dict[str, str] = {}
+        if caller:  # names the client this session calls for
+            headers[self.settings.client_id_header] = caller
+        if auth_header:
+            headers.update(auth_header)
+        hdrs = headers or None
         if cfg.transport == "sse":
-            return sse_client(cfg.url, headers=headers, timeout=cfg.timeout_seconds)
-        http_client = create_mcp_http_client(headers=headers)
+            return sse_client(cfg.url, headers=hdrs, timeout=cfg.timeout_seconds)
+        http_client = create_mcp_http_client(headers=hdrs)
         stack.push_async_callback(http_client.aclose)
         return streamable_http_client(cfg.url, http_client=http_client)
 
-    def _new_client(self, stack: AsyncExitStack, caller: str | None = None) -> Client:
+    def _new_client(
+        self, stack: AsyncExitStack, caller: str | None = None, auth_header: dict[str, str] | None = None
+    ) -> Client:
         return Client(
-            self._transport(stack, caller),
+            self._transport(stack, caller, auth_header),
             read_timeout_seconds=self.config.timeout_seconds,
             client_info=types.Implementation(name=self.settings.name, version=self.settings.version),
             cache=None,
@@ -151,10 +194,13 @@ class Upstream:
     async def run(self) -> None:
         """Supervisor loop: connect, serve, reconnect forever (until cancelled)."""
         delay = self.settings.reconnect_initial_delay
+        force_token = False  # after a failed attempt, refetch the oauth2 token in case it was rejected/expired
         while True:
             try:
                 async with AsyncExitStack() as stack:
-                    client = self._new_client(stack)
+                    auth_header = await self._authorization(force=force_token)
+                    force_token = False
+                    client = self._new_client(stack, auth_header=auth_header)
                     await stack.enter_async_context(client)
                     self.client = client
                     await self.refresh_catalog(force=True)
@@ -178,6 +224,7 @@ class Upstream:
                 raise
             except BaseException as exc:  # noqa: BLE001 - transports raise ExceptionGroups
                 self.last_error = _describe(exc)
+                force_token = self._is_oauth()  # a rejected/expired token looks like any other failure; refetch next time
                 logger.warning("Upstream '%s' unavailable: %s", self.name, self.last_error)
             finally:
                 self.client = None
@@ -265,7 +312,8 @@ class Upstream:
         """Owns one client's session: open it, keep it until idle or closed, then close it."""
         try:
             async with AsyncExitStack() as stack:
-                client = self._new_client(stack, caller)
+                auth_header = await self._authorization()  # reuses the cached oauth2 token the shared session fetched
+                client = self._new_client(stack, caller, auth_header)
                 await stack.enter_async_context(client)
                 session.client = client
                 session.ready.set()
@@ -354,7 +402,8 @@ def _describe(exc: BaseException) -> str:
 
 
 # Changing any of these means a new connection; the others (tool filters) apply to the open one.
-_CONNECTION_FIELDS = ("url", "transport", "timeout_seconds")
+# auth is here so editing a server's token/credentials reconnects with the new Authorization header.
+_CONNECTION_FIELDS = ("url", "transport", "timeout_seconds", "auth")
 
 
 class UpstreamPool:
@@ -364,16 +413,18 @@ class UpstreamPool:
         settings: GatewaySettings,
         on_change: OnChange | None = None,
         on_tools: OnTools | None = None,
+        token_store: TokenStore | None = None,
     ) -> None:
         self.settings = settings
         self._on_change = on_change
         self._on_tools = on_tools
+        self._token_store = token_store  # shared across all upstreams for OAuth2 token caching
         self.upstreams: dict[str, Upstream] = {c.name: self._new(c) for c in configs}
         self._scopes: dict[str, anyio.CancelScope] = {}
         self._tg: anyio.abc.TaskGroup | None = None
 
     def _new(self, config: UpstreamConfig) -> Upstream:
-        return Upstream(config, self.settings, self._on_change, self._on_tools)
+        return Upstream(config, self.settings, self._on_change, self._on_tools, self._token_store)
 
     async def run(self) -> None:
         async with anyio.create_task_group() as tg:

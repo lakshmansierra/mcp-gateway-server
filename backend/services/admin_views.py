@@ -17,7 +17,7 @@ from typing import Any
 from fastapi import HTTPException, status
 from hdbcli import dbapi
 
-from backend.db import api_keys, servers, tools, usage, users
+from backend.db import api_keys, server_auth, servers, tools, usage, users
 from backend.models import (
     CallOut,
     CallPageOut,
@@ -34,7 +34,9 @@ from backend.models import (
     UserOut,
     UserUsageOut,
 )
+from backend.models import AuthStatusOut
 from backend.models.server import ALL_TOOLS, NAME_SEPARATOR, split_tools
+from backend.services.servers import auth_status
 from backend.services.servers import to_out as server_out
 
 
@@ -76,27 +78,31 @@ def utc_naive(value: datetime | None) -> datetime | None:
 # ---- servers ----
 
 
-def _server(row: servers.ServerListRow) -> ServerListOut:
+def _server(row: servers.ServerListRow, auth: AuthStatusOut) -> ServerListOut:
     return ServerListOut(
         **server_out(row.server).model_dump(),
         is_deleted=bool(row.is_deleted),
         deleted_by=row.deleted_by,
         deleted_at=row.deleted_at,
         tool_count=row.tool_count,
+        auth=auth,
     )
 
 
 def list_servers(conn: dbapi.Connection, admin: UserOut) -> list[ServerListOut]:
     with db_cursor(conn) as cur:
-        return [_server(row) for row in servers.list_managed(cur, admin.id)]
+        rows = servers.list_managed(cur, admin.id)
+        auth_rows = server_auth.by_server_ids(cur, [r.server.id for r in rows])
+    return [_server(row, auth_status(auth_rows.get(row.server.id))) for row in rows]
 
 
 def get_server(conn: dbapi.Connection, server_id: int, admin: UserOut) -> ServerListOut:
     with db_cursor(conn) as cur:
         row = servers.get_managed(cur, server_id, admin.id)
+        auth = auth_status(server_auth.get(cur, server_id)) if row is not None else AuthStatusOut()
     if row is None:
         raise not_found(f"Server {server_id}")
-    return _server(row)
+    return _server(row, auth)
 
 
 # ---- tools ----

@@ -12,7 +12,7 @@ import logging
 from hdbcli import dbapi
 from pydantic import ValidationError
 
-from mcp_gateway.config.settings import ALL_TOOLS, DatabaseSettings, UpstreamConfig
+from mcp_gateway.config.settings import ALL_TOOLS, AuthConfig, DatabaseSettings, UpstreamConfig
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +22,12 @@ def _split_tools(value: str | None) -> list[str]:
     return [t.strip() for t in (value or "").split(",") if t.strip()]
 
 
-def load_servers(cur: dbapi.Cursor, db: DatabaseSettings) -> list[UpstreamConfig]:
+def load_servers(
+    cur: dbapi.Cursor, db: DatabaseSettings, auth_by_id: dict[int, AuthConfig] | None = None
+) -> list[UpstreamConfig]:
     """The live servers. A row the gateway can't use is skipped with a warning instead of stopping every other
-    server."""
+    server. auth_by_id (from load_server_auth) attaches each server's upstream auth config by its id."""
+    auth_by_id = auth_by_id or {}
     cur.execute(
         f'SELECT "server_name", "server_url", "transport", "timeout_seconds", "include_tools", "exclude_tools", '
         f'"enabled", "user_id", "id" FROM {db.table(db.server_table)} WHERE "is_deleted" = 0 ORDER BY "id"'
@@ -42,6 +45,7 @@ def load_servers(cur: dbapi.Cursor, db: DatabaseSettings) -> list[UpstreamConfig
                 exclude_tools=_split_tools(exclude),
                 owner_id=owner_id,
                 id=server_id,
+                auth=auth_by_id.get(server_id),
             )
         except ValidationError as exc:
             logger.warning("Skipping server '%s' from the server table: %s", name, exc.errors()[0]["msg"])
