@@ -59,3 +59,4 @@ applications:
       MCP_TOOL_CHANGE_TABLE: "tool_changes_mgs"
       MCP_TOOL_CALL_TABLE: "tool_calls_mgs"
       MCP_SERVER_TOKEN_CACHE_TABLE: "mcp_server_token_cache_mgs"
+      REVOKED_TOKEN_TABLE: "revoked_token_mgs"
