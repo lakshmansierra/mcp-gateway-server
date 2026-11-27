@@ -39,6 +39,7 @@ from mcp_gateway.auth.api_keys import KeyStore, api_key_from_request
 from mcp_gateway.config.settings import NAME_SEPARATOR, ApiKeyConfig, GatewayConfig
 from mcp_gateway.db import load_registry
 from mcp_gateway.db.usage import ToolCall
+from mcp_gateway.upstream.oauth import TokenStore
 from mcp_gateway.upstream.pool import Upstream, UpstreamPool, UpstreamUnavailableError
 from mcp_gateway.usage import UsageRecorder
 from mcp_gateway.usage.recorder import utc_now
@@ -127,9 +128,14 @@ class Gateway:
         self.config = config
         self.changes = ChangeBus()
         self.usage = UsageRecorder(config.database, config.gateway)
+        self.token_store = TokenStore(config.database)  # OAuth2 access-token cache, shared by every upstream
         # Disabled servers are connected too: their owning admin may still use them (ApiKeyConfig.can_access).
         self.pool = UpstreamPool(
-            config.upstreams, config.gateway, on_change=self.changes.publish, on_tools=self.usage.tools_listed
+            config.upstreams,
+            config.gateway,
+            on_change=self.changes.publish,
+            on_tools=self.usage.tools_listed,
+            token_store=self.token_store,
         )
         self.keys = KeyStore(config.api_keys)
         self._reload_requested = anyio.Event()

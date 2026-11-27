@@ -27,6 +27,15 @@ export const MIN_PASSWORD = 8;
 /** tools/call outcomes recorded by the gateway */
 export const CALL_STATUSES = ['ok', 'error', 'timeout'];
 
+/** How the gateway authenticates to an upstream (AuthIn.auth_type). */
+export const AUTH_TYPES = { none: 'No auth', basic: 'Basic', bearer: 'Bearer', oauth2: 'OAuth 2.0' };
+/** OAuth2 grant types the gateway can run headless (AuthIn.oauth_grant_type). */
+export const OAUTH_GRANTS = { client_credentials: 'Client Credentials', password: 'Password Credentials' };
+/** How client credentials are sent to the token endpoint (AuthIn.client_authentication). */
+export const CLIENT_AUTH = { basic_header: 'Send as Basic Auth header', body: 'Send client credentials in body' };
+/** Where the authorization is added (AuthIn.add_auth_data_to). */
+export const ADD_AUTH_TO = { header: 'Request Headers', url: 'Request URL' };
+
 /** The gateway's single MCP endpoint; API keys decide which servers a client reaches. */
 export const GATEWAY_MCP_URL = (import.meta.env.VITE_GATEWAY_MCP_URL || '').replace(/\/+$/, '');
 
@@ -78,9 +87,14 @@ export const getServer = (id) => request('GET', `/api/admin/servers/${id}`);
 /** GET /api/admin/servers/{id}/tools -> ToolOut[] */
 export const listServerTools = (id) => request('GET', `/api/admin/servers/${id}/tools`);
 
-/** POST /api/admin/servers with ServerCreate { server_name, server_url, transport, timeout_seconds, enabled } */
-export const registerServer = ({ server_name, server_url, transport, timeout_seconds, enabled }) =>
-  request('POST', '/api/admin/servers', { body: { server_name, server_url, transport, timeout_seconds, enabled } });
+/**
+ * POST /api/admin/servers with ServerCreate { server_name, server_url, transport, timeout_seconds, enabled, auth? }
+ * auth (AuthIn) is optional; leave it out (or send { auth_type: 'none' }) for no upstream auth.
+ */
+export const registerServer = ({ server_name, server_url, transport, timeout_seconds, enabled, auth }) =>
+  request('POST', '/api/admin/servers', {
+    body: { server_name, server_url, transport, timeout_seconds, enabled, ...(auth ? { auth } : {}) },
+  });
 
 /** PATCH /api/admin/servers/{id} with ServerUpdate: only the fields to change. */
 export const updateServer = (id, changes) => request('PATCH', `/api/admin/servers/${id}`, { body: changes });

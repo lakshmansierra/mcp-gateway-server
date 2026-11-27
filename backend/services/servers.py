@@ -5,10 +5,41 @@ from __future__ import annotations
 from fastapi import HTTPException, status
 from hdbcli import dbapi
 
-from backend.db import servers
-from backend.models import ServerCreate, ServerDeletedOut, ServerOut, ServerUpdate, UserOut
+from backend.db import server_auth, servers
+from backend.models import AuthIn, AuthStatusOut, ServerCreate, ServerDeletedOut, ServerOut, ServerUpdate, UserOut
 from backend.models.server import split_tools
 from backend.services.ownership import require_admin_manages
+
+
+def apply_auth(cur: dbapi.Cursor, mcp_id: int, auth: AuthIn | None) -> None:
+    """Store, replace or remove a server's auth config. None (field not sent) leaves it unchanged; auth_type
+    'none' removes it; any other type writes a full replacement. The caller commits."""
+    if auth is None:
+        return
+    if auth.auth_type == "none":
+        server_auth.delete(cur, mcp_id)
+    else:
+        server_auth.upsert(cur, mcp_id, auth.columns())
+
+
+def auth_status(row: server_auth.AuthRow | None) -> AuthStatusOut:
+    """The non-secret view of an auth config for GET responses (never the secrets themselves)."""
+    if row is None:
+        return AuthStatusOut()
+    return AuthStatusOut(
+        auth_type=row.auth_type,
+        header_prefix=row.header_prefix,
+        username=row.username,
+        oauth_grant_type=row.oauth_grant_type,
+        add_auth_data_to=row.add_auth_data_to,
+        token_url=row.token_url,
+        client_id=row.client_id,
+        scope=row.scope,
+        client_authentication=row.client_authentication,
+        has_token=bool(row.token),
+        has_password=bool(row.password),
+        has_client_secret=bool(row.client_secret),
+    )
 
 
 def to_out(row: servers.ServerRow) -> ServerOut:
@@ -45,6 +76,7 @@ def register_server(conn: dbapi.Connection, body: ServerCreate, admin: UserOut) 
             timeout_seconds=body.timeout_seconds,
             enabled=body.enabled,
         )
+        apply_auth(cur, row.id, body.auth)
         conn.commit()
     except HTTPException:
         raise
@@ -86,8 +118,10 @@ def update_server(conn: dbapi.Connection, server_id: int, body: ServerUpdate, ad
                 detail = "belongs to a deleted server" if taken else "already exists"
                 raise HTTPException(status.HTTP_409_CONFLICT, f"Server name '{new_name}' {detail}")
 
-        if not servers.update(cur, server_id, changes):  # deleted by another request in the meantime
+        # changes may be empty when only auth was sent; in that case skip the server-row UPDATE.
+        if changes and not servers.update(cur, server_id, changes):  # deleted by another request in the meantime
             raise HTTPException(status.HTTP_409_CONFLICT, f"Server '{current.server_name}' is deleted and can't be edited")
+        apply_auth(cur, server_id, body.auth)
         row, _ = servers.get_by_id(cur, server_id)
         conn.commit()
     except HTTPException:

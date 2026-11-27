@@ -177,6 +177,17 @@ input, select, textarea { font: inherit; color: var(--text); }
 .alert-warn { background: var(--warn-soft); color: var(--warn); border: 1px solid #f1dfb8; border-radius: var(--radius-sm); padding: 10px 14px; font-size: 14px; line-height: 1.5; }
 .field-hint { color: var(--muted); font-size: 13px; line-height: 1.45; }
 
+/* Upstream auth block inside the add/edit server form */
+.auth-section {
+  display: flex; flex-direction: column; gap: 14px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  padding: 14px 16px 16px; margin: 2px 0;
+}
+.auth-section legend {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 600; color: var(--text-2); padding: 0 6px;
+}
+
 /* ---------- App shell ---------- */
 .app-shell { display: flex; min-height: 100%; }
 

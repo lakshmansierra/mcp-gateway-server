@@ -17,7 +17,9 @@ environment); nothing else is:
     USER_TABLE, MCP_SERVER_TABLE,
     MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE,
     MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE                         the backend's tables
+    MCP_SERVER_AUTH_TABLE                                               per-server upstream auth config (the gateway reads it)
     MCP_TOOL_TABLE, MCP_TOOL_CHANGE_TABLE, MCP_TOOL_CALL_TABLE          tool usage tables (the gateway writes them)
+    MCP_SERVER_TOKEN_CACHE_TABLE                                        OAuth2 access-token cache (the gateway writes it)
 
 Everything else comes from HANA: the MCP servers and the client API keys are rows in those tables, managed
 through the backend, loaded at startup and re-read every GATEWAY_DB_SYNC_INTERVAL seconds (mcp_gateway/db/).
@@ -27,6 +29,7 @@ The gateway writes only the tool usage tables: each server's tools and their his
 
 from __future__ import annotations
 
+import base64
 import os
 import re
 from collections.abc import Mapping
@@ -74,9 +77,11 @@ DATABASE_FIELDS = {
     "MCP_SERVER_TABLE": "server_table",
     "MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE": "api_key_table",
     "MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE": "api_key_mapping_table",
+    "MCP_SERVER_AUTH_TABLE": "server_auth_table",
     "MCP_TOOL_TABLE": "tool_table",
     "MCP_TOOL_CHANGE_TABLE": "tool_change_table",
     "MCP_TOOL_CALL_TABLE": "tool_call_table",
+    "MCP_SERVER_TOKEN_CACHE_TABLE": "token_cache_table",
 }
 # No default can be guessed for these: the gateway stops at startup if one is missing.
 REQUIRED_DATABASE_VARS = ("HANA_HOST", "HANA_USER", "HANA_PASSWORD", "HANA_SCHEMA")
@@ -84,6 +89,50 @@ REQUIRED_DATABASE_VARS = ("HANA_HOST", "HANA_USER", "HANA_PASSWORD", "HANA_SCHEM
 
 def _split_list(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+class AuthConfig(BaseModel):
+    """How the gateway authenticates to one upstream: a row of the auth table (mcp_server_auth_mgs), keyed by
+    the server's id. A server with no row uses no auth. Secrets are stored reversibly (the gateway must present
+    them) and kept out of repr/logs.
+
+    Only the columns the chosen auth_type needs are set; the rest are None. For 'oauth2' the gateway fetches a
+    short-lived token from token_url at connect time (not yet implemented); 'bearer' and 'basic' are static.
+    """
+
+    auth_type: Literal["bearer", "basic", "oauth2"]
+
+    # bearer
+    token: str | None = Field(None, repr=False)
+
+    # basic (also the oauth2 'password' grant)
+    username: str | None = None
+    password: str | None = Field(None, repr=False)
+
+    # oauth2 (client_credentials | password)
+    oauth_grant_type: Literal["client_credentials", "password"] | None = None
+    add_auth_data_to: Literal["header", "url"] | None = None
+    header_prefix: str | None = None
+    token_url: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = Field(None, repr=False)
+    scope: str | None = None
+    client_authentication: Literal["basic_header", "body"] | None = None
+
+    def static_header(self) -> dict[str, str] | None:
+        """The Authorization header that can be built without contacting an auth server: bearer and basic.
+        Returns None for oauth2 (its token is fetched at connect time) and when the type's secret is missing."""
+        if self.auth_type == "bearer":
+            if not self.token:
+                return None
+            prefix = (self.header_prefix or "Bearer").strip()
+            return {"Authorization": f"{prefix} {self.token}".strip()}
+        if self.auth_type == "basic":
+            if self.username is None and self.password is None:
+                return None
+            raw = f"{self.username or ''}:{self.password or ''}".encode()
+            return {"Authorization": "Basic " + base64.b64encode(raw).decode()}
+        return None
 
 
 class UpstreamConfig(BaseModel):
@@ -104,6 +153,9 @@ class UpstreamConfig(BaseModel):
     owner_id: int | None = None
     # The row's id: the tool usage tables refer to the server by it (tools_mgs.mcp_id). None = not recorded.
     id: int | None = None
+    # How the gateway authenticates to this server (the auth table, keyed by id). None = no auth. Part of the
+    # connection, so changing it reconnects (see pool._CONNECTION_FIELDS).
+    auth: AuthConfig | None = None
 
     @field_validator("name")
     @classmethod
@@ -233,10 +285,14 @@ class DatabaseSettings(BaseModel):
     server_table: str = "mcp_app_mgs"
     api_key_table: str = "client_to_gateway_mcp_api_key_mgs"
     api_key_mapping_table: str = "client_to_gateway_mcp_api_key_mapping_mgs"
+    # Per-server auth config (bearer/basic/oauth2), written by the backend and read by the gateway.
+    server_auth_table: str = "mcp_server_auth_mgs"
     # Written by the gateway: each server's tools, their history, and every tool call.
     tool_table: str = "tools_mgs"
     tool_change_table: str = "tool_changes_mgs"
     tool_call_table: str = "tool_calls_mgs"
+    # Written by the gateway: OAuth2 access tokens it fetches, cached with their expiry.
+    token_cache_table: str = "mcp_server_token_cache_mgs"
 
     @field_validator(
         "schema_name",
@@ -244,9 +300,11 @@ class DatabaseSettings(BaseModel):
         "server_table",
         "api_key_table",
         "api_key_mapping_table",
+        "server_auth_table",
         "tool_table",
         "tool_change_table",
         "tool_call_table",
+        "token_cache_table",
     )
     @classmethod
     def _plain_identifier(cls, v: str) -> str:

@@ -17,6 +17,129 @@ SERVER_NAME_PATTERN = r"^[A-Za-z0-9_-]+$"
 
 Transport = Literal["streamable_http", "sse"]
 
+# How the gateway authenticates to the upstream. 'none' means no auth (and removes any stored config).
+AuthType = Literal["none", "bearer", "basic", "oauth2"]
+OAuthGrant = Literal["client_credentials", "password"]
+AddAuthTo = Literal["header", "url"]
+ClientAuth = Literal["basic_header", "body"]
+
+# Secret columns: never returned by any GET, only written. The rest of an auth config is echoed back.
+_SECRET_FIELDS = ("token", "password", "client_secret")
+
+
+class AuthIn(BaseModel):
+    """Auth config sent with ServerCreate / ServerUpdate: one block per server. Only the fields the chosen
+    auth_type needs are required; the rest are ignored. 'none' clears any existing config.
+
+    Secrets (token / password / client_secret) are write-only: send them to set or change them; no GET ever
+    returns them. On edit the UI sends a full auth block only when the admin changes auth, so a plain token is
+    always present when it's being set — the backend stores a full replacement, it does not merge.
+    """
+
+    auth_type: AuthType
+
+    # bearer
+    token: str | None = None
+    header_prefix: str | None = None  # defaults to 'Bearer' when omitted
+
+    # basic (also the oauth2 'password' grant)
+    username: str | None = None
+    password: str | None = None
+
+    # oauth2 (client_credentials | password)
+    oauth_grant_type: OAuthGrant | None = None
+    add_auth_data_to: AddAuthTo | None = None
+    token_url: AnyHttpUrl | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+    scope: str | None = None
+    client_authentication: ClientAuth | None = None
+
+    @model_validator(mode="after")
+    def _required_per_type(self) -> AuthIn:
+        t = self.auth_type
+        missing: list[str] = []
+        if t == "bearer":
+            if not (self.token or "").strip():
+                missing.append("token")
+        elif t == "basic":
+            if not (self.username or "").strip():
+                missing.append("username")
+        elif t == "oauth2":
+            if not self.oauth_grant_type:
+                missing.append("oauth_grant_type")
+            if not self.token_url:
+                missing.append("token_url")
+            if not (self.client_id or "").strip():
+                missing.append("client_id")
+            if not (self.client_secret or "").strip():
+                missing.append("client_secret")
+            if self.oauth_grant_type == "password":
+                if not (self.username or "").strip():
+                    missing.append("username")
+                if not (self.password or "").strip():
+                    missing.append("password")
+        if missing:
+            raise ValueError(f"{t} auth needs: {', '.join(missing)}")
+        return self
+
+    def columns(self) -> dict[str, object]:
+        """The mcp_server_auth_mgs columns to store for this config (auth_type != 'none'). Unused columns are
+        None; defaults are filled in so the gateway reads a complete row."""
+        if self.auth_type == "none":
+            return {}
+        row: dict[str, object] = {
+            "auth_type": self.auth_type,
+            "token": None,
+            "username": None,
+            "password": None,
+            "oauth_grant_type": None,
+            "add_auth_data_to": None,
+            "header_prefix": None,
+            "token_url": None,
+            "client_id": None,
+            "client_secret": None,
+            "scope": None,
+            "client_authentication": None,
+        }
+        if self.auth_type == "bearer":
+            row["token"] = self.token
+            row["header_prefix"] = (self.header_prefix or "Bearer").strip()
+        elif self.auth_type == "basic":
+            row["username"] = self.username
+            row["password"] = self.password or ""
+        elif self.auth_type == "oauth2":
+            row["oauth_grant_type"] = self.oauth_grant_type
+            row["add_auth_data_to"] = self.add_auth_data_to or "header"
+            row["header_prefix"] = (self.header_prefix or "Bearer").strip()
+            row["token_url"] = str(self.token_url)
+            row["client_id"] = self.client_id
+            row["client_secret"] = self.client_secret
+            row["scope"] = (self.scope or "").strip() or None
+            row["client_authentication"] = self.client_authentication or "basic_header"
+            if self.oauth_grant_type == "password":
+                row["username"] = self.username
+                row["password"] = self.password
+        return row
+
+
+class AuthStatusOut(BaseModel):
+    """What a GET reports about a server's auth: the type, the non-secret fields, and which secrets are set.
+    Never includes token / password / client_secret."""
+
+    auth_type: AuthType = "none"
+    header_prefix: str | None = None
+    username: str | None = None
+    oauth_grant_type: str | None = None
+    add_auth_data_to: str | None = None
+    token_url: str | None = None
+    client_id: str | None = None
+    scope: str | None = None
+    client_authentication: str | None = None
+    has_token: bool = False
+    has_password: bool = False
+    has_client_secret: bool = False
+
 
 def _check_server_name(v: str) -> str:
     if NAME_SEPARATOR in v:
@@ -60,6 +183,8 @@ class ServerCreate(BaseModel):
     transport: Transport = "streamable_http"
     timeout_seconds: int = Field(60, gt=0, le=3600)
     enabled: bool = True
+    # How the gateway authenticates to this upstream. Omitted or 'none' means no auth.
+    auth: AuthIn | None = None
 
     @field_validator("server_name")
     @classmethod
@@ -81,6 +206,8 @@ class ServerUpdate(BaseModel):
     enabled: bool | None = None
     include_tools: list[str] | None = None
     exclude_tools: list[str] | None = None
+    # Replace the server's auth config. 'none' removes it. Omitted (null) leaves it unchanged.
+    auth: AuthIn | None = None
 
     @field_validator("server_name")
     @classmethod
@@ -108,16 +235,20 @@ class ServerUpdate(BaseModel):
     def _something_to_change(self) -> ServerUpdate:
         if not self.model_fields_set:
             raise ValueError("send at least one field to change")
-        # Only exclude_tools may be cleared with null; the other columns always need a value.
-        nulls = sorted(f for f in self.model_fields_set if getattr(self, f) is None and f != "exclude_tools")
+        # exclude_tools and auth may be cleared with null; the other columns always need a value.
+        nulls = sorted(
+            f for f in self.model_fields_set if getattr(self, f) is None and f not in ("exclude_tools", "auth")
+        )
         if nulls:
             raise ValueError(f"these fields cannot be null: {nulls}")
         return self
 
     def changes(self) -> dict[str, object]:
-        """Column -> value for the fields that were sent, in the form the table stores them."""
+        """Column -> value for the server-table fields that were sent (auth is handled separately)."""
         out: dict[str, object] = {}
         for field in self.model_fields_set:
+            if field == "auth":
+                continue
             value = getattr(self, field)
             if field == "server_url":
                 value = str(value)
@@ -151,6 +282,7 @@ class ServerListOut(ServerOut):
     deleted_by: int | None
     deleted_at: datetime | None
     tool_count: int = Field(description="Tools the server lists now, as the gateway last saw them (hidden ones too)")
+    auth: AuthStatusOut = Field(default_factory=AuthStatusOut, description="Auth config (type + which secrets are set; never the secrets)")
 
 
 class ServerDeletedOut(BaseModel):

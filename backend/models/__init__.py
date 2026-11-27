@@ -9,7 +9,15 @@ from backend.models.api_key import (
     KeyServerOut,
     KeyServersUpdate,
 )
-from backend.models.server import ServerCreate, ServerDeletedOut, ServerListOut, ServerOut, ServerUpdate
+from backend.models.server import (
+    AuthIn,
+    AuthStatusOut,
+    ServerCreate,
+    ServerDeletedOut,
+    ServerListOut,
+    ServerOut,
+    ServerUpdate,
+)
 from backend.models.tool import ToolChangeOut, ToolOut
 from backend.models.usage import (
     CallOut,
@@ -36,6 +44,8 @@ from backend.models.user import (
 )
 
 __all__ = [
+    "AuthIn",
+    "AuthStatusOut",
     "CallOut",
     "CallPageOut",
     "CallStatus",
