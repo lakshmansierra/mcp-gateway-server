@@ -30,6 +30,7 @@ applications:
       MCP_SERVER_TABLE: "mcp_app_mgs"
       MCP_CLIENT_TO_GATEWAY_API_KEY_TABLE: "client_to_gateway_mcp_api_key_mgs"
       MCP_CLIENT_TO_GATEWAY_API_KEY_MAPPING_TABLE: "client_to_gateway_mcp_api_key_mapping_mgs"
+      MCP_SERVER_AUTH_TABLE: "mcp_server_auth_mgs"
       REVOKED_TOKEN_TABLE: "revoked_token_mgs"
       MCP_TOOL_TABLE: "tools_mgs"
       MCP_TOOL_CHANGE_TABLE: "tool_changes_mgs"
